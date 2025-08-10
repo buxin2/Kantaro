@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: animal-detection
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    plan: free
+    envVars:
+      - key: IP_CAMERA_URL
+        value: http://YOUR_CAMERA_STREAM_URL
