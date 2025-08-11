@@ -1,10 +1,39 @@
+# render.yaml - Render deployment configuration
 services:
   - type: web
-    name: animal-detection
+    name: ai-security-camera
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
-    plan: free
+    plan: starter
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: gunicorn app:app
     envVars:
-      - key: IP_CAMERA_URL
-        value: http://YOUR_CAMERA_STREAM_URL
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: security-db
+          property: connectionString
+      - key: STRIPE_SECRET_KEY
+        sync: false  # Set this manually in Render dashboard
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false  # Set this manually in Render dashboard
+
+databases:
+  - name: security-db
+    databaseName: security_app
+    user: security_user
+    plan: starter
+
+# runtime.txt - Specify Python version
+# Create this file separately with just the Python version
+# Content: python-3.11.8
+
+# Procfile - Alternative to render.yaml
+# Create this file separately with:
+# web: gunicorn app:app
+
+# .python-version - Pin Python version
+# Create this file separately with:
+# 3.11
