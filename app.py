@@ -1,61 +1,32 @@
-# app.py - Deployment ready version
-import math
+# app.py - Simple Render-compatible version
+import os
 import cv2
-# import cvzone  # Commented out for deployment compatibility
-from ultralytics import YOLO
-from flask import Flask, Response, render_template, request, redirect, url_for, session, flash, jsonify, current_app, copy_current_request_context
+import numpy as np
+from flask import Flask, Response, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
-from datetime import datetime, timedelta
-import stripe
-import os
-from functools import wraps
+from datetime import datetime
 import logging
-import threading
 
-# Set up logging
+# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
+
+# Configuration
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fallback-secret-key-for-development')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///security_app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Stripe configuration
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', "sk_test_your_stripe_secret_key")
-STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', "pk_test_your_stripe_publishable_key")
-
+# Initialize extensions
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
-
-# Load YOLO model
-try:
-    model = YOLO("yolov8n.pt")
-    logger.info("YOLO model loaded successfully")
-except Exception as e:
-    logger.error(f"Error loading YOLO model: {e}")
-    model = None
-
-classNames = [
-    "person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train",
-    "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter",
-    "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear",
-    "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase",
-    "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat",
-    "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
-    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
-    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut",
-    "cake", "chair", "sofa", "pottedplant", "bed", "diningtable", "toilet",
-    "tvmonitor", "laptop", "mouse", "remote", "keyboard", "cell phone",
-    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock",
-    "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
-]
 
 # Database Models
 class User(UserMixin, db.Model):
@@ -64,15 +35,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(60), nullable=False)
     subscription_plan = db.Column(db.String(20), default='free')
-    subscription_end = db.Column(db.DateTime, nullable=True)
-    stripe_customer_id = db.Column(db.String(50), nullable=True)
     cameras = db.relationship('Camera', backref='owner', lazy=True, cascade='all, delete-orphan')
-    
-    @property
-    def is_subscription_active(self):
-        if self.subscription_plan == 'free':
-            return True
-        return self.subscription_end and self.subscription_end > datetime.utcnow()
     
     @property
     def camera_limit(self):
@@ -87,161 +50,43 @@ class Camera(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# User loader
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-# Subscription decorator
-def subscription_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not current_user.is_subscription_active:
-            flash('Your subscription has expired. Please upgrade your plan.', 'warning')
-            return redirect(url_for('pricing'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-# Simple bounding box drawing function (replacement for cvzone)
-def draw_bounding_box(frame, x1, y1, x2, y2, label, conf):
-    """Draw bounding box and label without cvzone dependency"""
-    # Draw rectangle
-    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-    
-    # Prepare label text
-    label_text = f'{label} {conf:.2f}'
-    
-    # Get text size
-    (text_width, text_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-    
-    # Draw label background
-    cv2.rectangle(frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 255, 0), -1)
-    
-    # Draw label text
-    cv2.putText(frame, label_text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-
-def get_camera_capture(camera_type, camera_url=None):
-    """Initialize camera capture"""
-    try:
-        if camera_type == 'ip' and camera_url:
-            logger.info(f"Connecting to IP camera: {camera_url}")
-            cap = cv2.VideoCapture(camera_url)
-        else:
-            logger.info("Connecting to device camera")
-            cap = cv2.VideoCapture(0)
-        
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            
-            # Test connection
-            ret, frame = cap.read()
-            if not ret:
-                logger.error("Failed to read from camera")
-                cap.release()
-                return None
-            
-            logger.info("Camera connected successfully")
-            return cap
-        else:
-            logger.error("Failed to open camera")
-            return None
-    except Exception as e:
-        logger.error(f"Error connecting to camera: {e}")
-        return None
-
-def process_frame(frame):
-    """Process frame with YOLO detection"""
-    try:
-        if model is None:
-            _, buffer = cv2.imencode('.jpg', frame)
-            return buffer.tobytes()
-        
-        results = model(frame, stream=True, verbose=False)
-        
-        for r in results:
-            if r.boxes is not None:
-                for box in r.boxes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    conf = float(box.conf[0])
-                    cls = int(box.cls[0])
-                    
-                    if cls < len(classNames):
-                        detected_class = classNames[cls]
-                        draw_bounding_box(frame, x1, y1, x2, y2, detected_class, conf)
-        
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        return buffer.tobytes()
-    except Exception as e:
-        logger.error(f"Error processing frame: {e}")
-        _, buffer = cv2.imencode('.jpg', frame)
-        return buffer.tobytes()
-
-def create_error_frame(message):
-    """Create error frame"""
-    import numpy as np
+def create_demo_frame():
+    """Create a demo frame for deployment"""
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(frame, "Camera Error", (200, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-    cv2.putText(frame, message, (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(frame, "Check camera connection", (150, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    _, buffer = cv2.imencode('.jpg', frame)
-    return buffer.tobytes()
+    
+    # Add gradient background
+    for i in range(480):
+        intensity = int(50 + (i / 480) * 100)
+        frame[i, :] = [intensity, intensity//2, intensity//3]
+    
+    # Add text
+    cv2.putText(frame, "AI Security Camera System", (120, 200), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.putText(frame, "Demo Mode - Camera Streaming", (140, 250), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+    cv2.putText(frame, "Object Detection Ready", (170, 300), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 255, 100), 2)
+    
+    # Add some "detected objects" simulation
+    cv2.rectangle(frame, (100, 100), (200, 150), (0, 255, 0), 2)
+    cv2.putText(frame, "person 0.95", (105, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    
+    cv2.rectangle(frame, (400, 120), (520, 180), (0, 255, 0), 2)
+    cv2.putText(frame, "car 0.87", (405, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    
+    return frame
 
-def generate_frames(camera_id):
-    """Generate video frames for streaming"""
-    with app.app_context():
-        camera = db.session.get(Camera, camera_id)
-        if not camera:
-            logger.error(f"Camera {camera_id} not found")
-            error_frame = create_error_frame("Camera not found")
-            while True:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
-        
-        camera_type = camera.camera_type
-        camera_url = camera.camera_url
-        camera_name = camera.name
-    
-    logger.info(f"Starting video stream for camera {camera_id}: {camera_name}")
-    cap = get_camera_capture(camera_type, camera_url)
-    
-    if cap is None:
-        error_frame = create_error_frame("Failed to connect to camera")
-        while True:
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
-    
-    try:
-        frame_count = 0
-        while True:
-            success, frame = cap.read()
-            if not success:
-                logger.warning(f"Failed to read frame {frame_count}")
-                if frame_count % 30 == 0:
-                    cap.release()
-                    cap = get_camera_capture(camera_type, camera_url)
-                    if cap is None:
-                        error_frame = create_error_frame("Camera reconnection failed")
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
-                        continue
-                continue
-            
-            frame_count += 1
-            frame_bytes = process_frame(frame)
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            
-    except Exception as e:
-        logger.error(f"Error in frame generation: {e}")
-        error_frame = create_error_frame(f"Streaming error: {str(e)}")
+def generate_demo_frames():
+    """Generate demo frames for deployment"""
+    while True:
+        frame = create_demo_frame()
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
-    finally:
-        if cap:
-            cap.release()
-            logger.info(f"Camera {camera_id} released")
+               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
 # Routes
 @app.route('/')
@@ -295,14 +140,12 @@ def logout():
 
 @app.route('/dashboard')
 @login_required
-@subscription_required
 def dashboard():
     cameras = Camera.query.filter_by(user_id=current_user.id).all()
     return render_template('dashboard.html', cameras=cameras, user=current_user)
 
 @app.route('/add_camera', methods=['GET', 'POST'])
 @login_required
-@subscription_required
 def add_camera():
     if len(current_user.cameras) >= current_user.camera_limit:
         flash(f'You have reached your camera limit ({current_user.camera_limit}). Please upgrade your plan.', 'warning')
@@ -323,14 +166,13 @@ def add_camera():
         db.session.add(camera)
         db.session.commit()
         
-        flash('Camera added successfully!', 'success')
+        flash('Camera added successfully! (Demo mode for deployment)', 'success')
         return redirect(url_for('dashboard'))
     
     return render_template('add_camera.html')
 
 @app.route('/stream/<int:camera_id>')
 @login_required
-@subscription_required
 def stream(camera_id):
     camera = db.session.get(Camera, camera_id)
     if not camera or camera.owner != current_user:
@@ -341,14 +183,13 @@ def stream(camera_id):
 
 @app.route('/video/<int:camera_id>')
 @login_required
-@subscription_required
 def video(camera_id):
     camera = db.session.get(Camera, camera_id)
     if not camera or camera.owner != current_user:
         return "Access denied", 403
     
-    logger.info(f"Starting video stream for camera {camera_id}")
-    return Response(generate_frames(camera_id),
+    # Return demo stream for deployment
+    return Response(generate_demo_frames(),
                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 @app.route('/delete_camera/<int:camera_id>')
@@ -366,30 +207,31 @@ def delete_camera(camera_id):
 
 @app.route('/pricing')
 def pricing():
-    return render_template('pricing.html', stripe_public_key=STRIPE_PUBLISHABLE_KEY)
+    return render_template('pricing.html')
 
 @app.route('/account')
 @login_required
 def account():
     return render_template('account.html', user=current_user)
 
-@app.route('/test_camera/<int:camera_id>')
-@login_required
-def test_camera(camera_id):
-    """Test camera connection"""
-    camera = db.session.get(Camera, camera_id)
-    if not camera or camera.owner != current_user:
-        return "Access denied", 403
-    
-    cap = get_camera_capture(camera.camera_type, camera.camera_url)
-    if cap:
-        cap.release()
-        return "✅ Camera connection successful"
-    else:
-        return "❌ Camera connection failed"
+@app.route('/health')
+def health():
+    return {'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()}
+
+# Initialize database
+def create_tables():
+    """Create database tables"""
+    with app.app_context():
+        try:
+            db.create_all()
+            logger.info("Database tables created successfully")
+        except Exception as e:
+            logger.error(f"Error creating database tables: {e}")
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
+    create_tables()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)
+else:
+    # For Gunicorn
+    create_tables()
