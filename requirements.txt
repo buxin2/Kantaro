@@ -1,34 +1,36 @@
-# Core Flask
-Flask==2.3.3
-Flask-SQLAlchemy==3.0.5
+# Core Flask and web dependencies
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
 Flask-Bcrypt==1.0.1
 Flask-Login==0.6.3
-Flask-Mail==0.9.1
 
-# Computer Vision and AI
-opencv-python==4.8.0.76
+# Computer Vision and AI - Updated versions for better compatibility
+opencv-python-headless==4.8.1.78
 ultralytics==8.0.200
-cvzone==1.6.1
+# cvzone==1.6.1  # Commented out - often causes issues on cloud platforms
 
 # Database
-SQLAlchemy==2.0.21
+SQLAlchemy==2.0.23
 
 # Payment Processing
-stripe==6.6.0
+stripe==7.8.0
 
-# Environment Management
-python-dotenv==1.0.0
+# Image processing - Updated for Python 3.13 compatibility
+Pillow>=10.1.0
+numpy>=1.24.3
 
-# Image Processing
-Pillow==10.0.0
-numpy==1.24.3
-
-# Production Server
+# Web server (for production)
 gunicorn==21.2.0
 
-# Testing
-pytest==7.4.0
-pytest-flask==1.2.0
+# Environment variables
+python-dotenv==1.0.0
 
-# Development
-Flask-DebugToolbar==0.13.1
+# Date/time utilities
+pytz==2023.3
+
+# Additional dependencies that might be needed
+Werkzeug==3.0.1
+Jinja2==3.1.2
+itsdangerous==2.1.2
+click==8.1.7
+MarkupSafe==2.1.3
