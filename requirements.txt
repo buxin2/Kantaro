@@ -17,9 +17,9 @@ Flask-Login==0.6.3
 
 # Computer Vision
 numpy>=1.24.4,<2.0.0
-opencv-python-headless>=4.8.1.78
-ultralytics>=8.0.200
-cvzone>=1.5.6
+opencv-python-headless==4.8.1.78
+ultralytics==8.0.200
+cvzone==1.5.6
 
 # Image processing
 Pillow==10.0.1
