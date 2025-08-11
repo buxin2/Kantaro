@@ -1,0 +1,68 @@
+<!-- templates/add_camera.html -->
+{% extends "base.html" %}
+
+{% block title %}Add Camera - Security System{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="mb-0">Add New Camera</h3>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Camera Name</label>
+                        <input type="text" class="form-control" id="name" name="name" placeholder="e.g., Front Door, Parking Lot" required>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Camera Type</label>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="type" id="device" value="device" checked onchange="toggleCameraUrl()">
+                            <label class="form-check-label" for="device">
+                                Device Camera (Webcam/Phone)
+                            </label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="radio" name="type" id="ip" value="ip" onchange="toggleCameraUrl()">
+                            <label class="form-check-label" for="ip">
+                                IP Camera (Network Camera)
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3" id="camera-url-group" style="display: none;">
+                        <label for="camera_url" class="form-label">IP Camera URL</label>
+                        <input type="text" class="form-control" id="camera_url" name="camera_url" 
+                               placeholder="http://192.168.1.100:8080 or rtsp://camera.example.com">
+                        <small class="form-text text-muted">
+                            Examples: http://IP:PORT/stream or rtsp://camera/stream
+                        </small>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-success">Add Camera</button>
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Cancel</a>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function toggleCameraUrl() {
+    const ipRadio = document.getElementById('ip');
+    const urlGroup = document.getElementById('camera-url-group');
+    const urlInput = document.getElementById('camera_url');
+    
+    if (ipRadio.checked) {
+        urlGroup.style.display = 'block';
+        urlInput.required = true;
+    } else {
+        urlGroup.style.display = 'none';
+        urlInput.required = false;
+    }
+}
+</script>
+{% endblock %}

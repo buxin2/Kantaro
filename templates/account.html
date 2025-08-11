@@ -1,0 +1,79 @@
+<!-- templates/account.html -->
+{% extends "base.html" %}
+
+{% block title %}Account - Security System{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="mb-0">Account Information</h3>
+            </div>
+            <div class="card-body">
+                <div class="row mb-3">
+                    <div class="col-sm-3"><strong>Username:</strong></div>
+                    <div class="col-sm-9">{{ user.username }}</div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-sm-3"><strong>Email:</strong></div>
+                    <div class="col-sm-9">{{ user.email }}</div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-sm-3"><strong>Plan:</strong></div>
+                    <div class="col-sm-9">
+                        <span class="badge bg-primary subscription-badge">{{ user.subscription_plan }}</span>
+                        <a href="{{ url_for('pricing') }}" class="btn btn-sm btn-outline-primary ms-2">Change Plan</a>
+                    </div>
+                </div>
+                {% if user.subscription_end %}
+                <div class="row mb-3">
+                    <div class="col-sm-3"><strong>Expires:</strong></div>
+                    <div class="col-sm-9">{{ user.subscription_end.strftime('%B %d, %Y at %I:%M %p') }}</div>
+                </div>
+                {% endif %}
+                <div class="row mb-3">
+                    <div class="col-sm-3"><strong>Camera Limit:</strong></div>
+                    <div class="col-sm-9">{{ user.camera_limit }}</div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-sm-3"><strong>Active Cameras:</strong></div>
+                    <div class="col-sm-9">{{ user.cameras|length }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="d-grid gap-2">
+                    <a href="{{ url_for('dashboard') }}" class="btn btn-primary">View Dashboard</a>
+                    <a href="{{ url_for('add_camera') }}" class="btn btn-success">Add Camera</a>
+                    <a href="{{ url_for('pricing') }}" class="btn btn-outline-primary">Upgrade Plan</a>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card mt-3">
+            <div class="card-header">
+                <h6 class="mb-0">Subscription Status</h6>
+            </div>
+            <div class="card-body">
+                {% if user.is_subscription_active %}
+                    <div class="alert alert-success">
+                        ✓ Active Subscription
+                    </div>
+                {% else %}
+                    <div class="alert alert-warning">
+                        ⚠️ Subscription Expired
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

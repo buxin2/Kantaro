@@ -1,12 +1,30 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Animal Detection Stream</title>
-</head>
-<body style="text-align:center;">
-    <h1>Live Stream</h1>
-    <img src="/video" width="640" height="480">
-    <br><br>
-    <a href="/">Change Camera URL</a>
-</body>
-</html>
+<!-- templates/stream.html -->
+{% extends "base.html" %}
+
+{% block title %}{{ camera.name }} - Live Stream{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2>{{ camera.name }} - Live Stream</h2>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">Back to Dashboard</a>
+        </div>
+        
+        <div class="card">
+            <div class="card-body text-center">
+                <img src="{{ url_for('video', camera_id=camera.id) }}" class="img-fluid" style="max-width: 100%; height: auto;">
+            </div>
+        </div>
+        
+        <div class="mt-3">
+            <small class="text-muted">
+                Camera Type: {{ camera.camera_type.upper() }}
+                {% if camera.camera_url %}
+                | URL: {{ camera.camera_url }}
+                {% endif %}
+            </small>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+<!-- templates/home.html -->
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-lg-8 mx-auto text-center">
+        <h1 class="display-4 mb-4">🔒 AI-Powered Security Camera System</h1>
+        <p class="lead mb-4">Monitor your premises with advanced object detection powered by YOLO AI technology.</p>
+        
+        {% if not current_user.is_authenticated %}
+            <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                <a href="{{ url_for('register') }}" class="btn btn-primary btn-lg me-md-2">Get Started Free</a>
+                <a href="{{ url_for('login') }}" class="btn btn-outline-secondary btn-lg">Login</a>
+            </div>
+        {% else %}
+            <a href="{{ url_for('dashboard') }}" class="btn btn-primary btn-lg">Go to Dashboard</a>
+        {% endif %}
+
+        <div class="row mt-5">
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h5>🎯 Object Detection</h5>
+                        <p>Real-time detection of people, vehicles, and 80+ object classes</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h5>📱 Multiple Cameras</h5>
+                        <p>Support for IP cameras and device cameras based on your plan</p>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-body text-center">
+                        <h5>☁️ Cloud Access</h5>
+                        <p>Access your cameras from anywhere with internet connection</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
