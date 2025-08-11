@@ -1,7 +1,7 @@
-# Fixed app.py - Replace your current app.py with this
+# app.py - Deployment ready version
 import math
 import cv2
-import cvzone
+# import cvzone  # Commented out for deployment compatibility
 from ultralytics import YOLO
 from flask import Flask, Response, render_template, request, redirect, url_for, session, flash, jsonify, current_app, copy_current_request_context
 from flask_sqlalchemy import SQLAlchemy
@@ -19,13 +19,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-change-this'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///security_app.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///security_app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Stripe configuration
-stripe.api_key = "sk_test_your_stripe_secret_key"  # Replace with your Stripe secret key
-STRIPE_PUBLISHABLE_KEY = "pk_test_your_stripe_publishable_key"  # Replace with your Stripe publishable key
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', "sk_test_your_stripe_secret_key")
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', "pk_test_your_stripe_publishable_key")
 
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
@@ -83,11 +83,11 @@ class Camera(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     camera_url = db.Column(db.String(200), nullable=True)
-    camera_type = db.Column(db.String(20), nullable=False)  # 'ip' or 'device'
+    camera_type = db.Column(db.String(20), nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# User loader - MUST be after model definition
+# User loader
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
@@ -102,7 +102,24 @@ def subscription_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Camera processing functions
+# Simple bounding box drawing function (replacement for cvzone)
+def draw_bounding_box(frame, x1, y1, x2, y2, label, conf):
+    """Draw bounding box and label without cvzone dependency"""
+    # Draw rectangle
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    
+    # Prepare label text
+    label_text = f'{label} {conf:.2f}'
+    
+    # Get text size
+    (text_width, text_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+    
+    # Draw label background
+    cv2.rectangle(frame, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 255, 0), -1)
+    
+    # Draw label text
+    cv2.putText(frame, label_text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+
 def get_camera_capture(camera_type, camera_url=None):
     """Initialize camera capture"""
     try:
@@ -113,20 +130,23 @@ def get_camera_capture(camera_type, camera_url=None):
             logger.info("Connecting to device camera")
             cap = cv2.VideoCapture(0)
         
-        # Set properties
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        
-        # Test connection
-        ret, frame = cap.read()
-        if not ret:
-            logger.error("Failed to read from camera")
-            cap.release()
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            
+            # Test connection
+            ret, frame = cap.read()
+            if not ret:
+                logger.error("Failed to read from camera")
+                cap.release()
+                return None
+            
+            logger.info("Camera connected successfully")
+            return cap
+        else:
+            logger.error("Failed to open camera")
             return None
-        
-        logger.info("Camera connected successfully")
-        return cap
     except Exception as e:
         logger.error(f"Error connecting to camera: {e}")
         return None
@@ -135,7 +155,6 @@ def process_frame(frame):
     """Process frame with YOLO detection"""
     try:
         if model is None:
-            # Return frame without detection if model failed to load
             _, buffer = cv2.imencode('.jpg', frame)
             return buffer.tobytes()
         
@@ -145,16 +164,12 @@ def process_frame(frame):
             if r.boxes is not None:
                 for box in r.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    w, h = x2 - x1, y2 - y1
-                    conf = math.ceil(box.conf[0] * 100) / 100
+                    conf = float(box.conf[0])
                     cls = int(box.cls[0])
                     
                     if cls < len(classNames):
                         detected_class = classNames[cls]
-                        cvzone.cornerRect(frame, (x1, y1, w, h))
-                        cvzone.putTextRect(frame, f'{detected_class} {conf}',
-                                           (max(0, x1), max(35, y1)),
-                                           scale=1, thickness=1)
+                        draw_bounding_box(frame, x1, y1, x2, y2, detected_class, conf)
         
         _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return buffer.tobytes()
@@ -174,9 +189,7 @@ def create_error_frame(message):
     return buffer.tobytes()
 
 def generate_frames(camera_id):
-    """Generate video frames - FIXED version with proper context handling"""
-    
-    # Get camera info ONCE at the start, within the request context
+    """Generate video frames for streaming"""
     with app.app_context():
         camera = db.session.get(Camera, camera_id)
         if not camera:
@@ -186,14 +199,11 @@ def generate_frames(camera_id):
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
         
-        # Store camera info for use in the generator
         camera_type = camera.camera_type
         camera_url = camera.camera_url
         camera_name = camera.name
     
-    logger.info(f"Starting video stream for camera {camera_id}: {camera_name} (Type: {camera_type})")
-    
-    # Initialize camera
+    logger.info(f"Starting video stream for camera {camera_id}: {camera_name}")
     cap = get_camera_capture(camera_type, camera_url)
     
     if cap is None:
@@ -208,7 +218,7 @@ def generate_frames(camera_id):
             success, frame = cap.read()
             if not success:
                 logger.warning(f"Failed to read frame {frame_count}")
-                if frame_count % 30 == 0:  # Try to reconnect every 30 failed attempts
+                if frame_count % 30 == 0:
                     cap.release()
                     cap = get_camera_capture(camera_type, camera_url)
                     if cap is None:
@@ -333,7 +343,6 @@ def stream(camera_id):
 @login_required
 @subscription_required
 def video(camera_id):
-    # Check access within app context
     camera = db.session.get(Camera, camera_id)
     if not camera or camera.owner != current_user:
         return "Access denied", 403
@@ -359,70 +368,6 @@ def delete_camera(camera_id):
 def pricing():
     return render_template('pricing.html', stripe_public_key=STRIPE_PUBLISHABLE_KEY)
 
-@app.route('/create-payment-intent', methods=['POST'])
-@login_required
-def create_payment():
-    try:
-        data = request.get_json()
-        plan = data['plan']
-        
-        prices = {
-            'basic': 999,   # $9.99
-            'pro': 1999,    # $19.99
-            'business': 4999 # $49.99
-        }
-        
-        if plan not in prices:
-            return jsonify({'error': 'Invalid plan'}), 400
-        
-        if not current_user.stripe_customer_id:
-            customer = stripe.Customer.create(
-                email=current_user.email,
-                name=current_user.username
-            )
-            current_user.stripe_customer_id = customer.id
-            db.session.commit()
-        
-        intent = stripe.PaymentIntent.create(
-            amount=prices[plan],
-            currency='usd',
-            customer=current_user.stripe_customer_id,
-            metadata={'plan': plan, 'user_id': current_user.id}
-        )
-        
-        return jsonify({
-            'client_secret': intent.client_secret
-        })
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 403
-
-@app.route('/webhook', methods=['POST'])
-def stripe_webhook():
-    payload = request.get_data()
-    sig_header = request.headers.get('Stripe-Signature')
-    endpoint_secret = 'whsec_your_webhook_secret'
-    
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-    except ValueError:
-        return 'Invalid payload', 400
-    except stripe.error.SignatureVerificationError:
-        return 'Invalid signature', 400
-    
-    if event['type'] == 'payment_intent.succeeded':
-        payment_intent = event['data']['object']
-        user_id = payment_intent['metadata']['user_id']
-        plan = payment_intent['metadata']['plan']
-        
-        user = db.session.get(User, user_id)
-        if user:
-            user.subscription_plan = plan
-            user.subscription_end = datetime.utcnow() + timedelta(days=30)
-            db.session.commit()
-    
-    return 'Success', 200
-
 @app.route('/account')
 @login_required
 def account():
@@ -446,4 +391,5 @@ def test_camera(camera_id):
 if __name__ == "__main__":
     with app.app_context():
         db.create_all()
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
