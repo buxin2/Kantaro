@@ -1,291 +1,36 @@
-# 📁 Structured Flask Application
-
-## Project Directory Structure
-
-```
-security_system/
-│
-├── app.py                      # Application factory
-├── config.py                   # Configuration settings
-├── requirements.txt            # Dependencies
-├── .env                        # Environment variables (create this)
-├── .gitignore                  # Git ignore file
-├── README.md                   # Documentation
-│
-├── models/
-│   ├── __init__.py            # Database models
-│   └── user.py                # User and Camera models
-│
-├── services/
-│   ├── __init__.py            # Service layer
-│   ├── camera_service.py      # Camera processing logic
-│   └── subscription_service.py # Subscription management
-│
-├── routes/
-│   ├── __init__.py            # Route blueprints
-│   ├── main.py                # Main routes (home, about)
-│   ├── auth.py                # Authentication routes
-│   ├── camera.py              # Camera management routes
-│   └── subscription.py        # Subscription routes
-│
-├── utils/
-│   ├── __init__.py            # Utilities
-│   └── decorators.py          # Custom decorators
-│
-├── templates/
-│   ├── base.html              # Base template
-│   ├── home.html              # Landing page
-│   │
-│   ├── auth/
-│   │   ├── login.html         # Login page
-│   │   ├── register.html      # Registration page
-│   │   └── account.html       # Account management
-│   │
-│   ├── camera/
-│   │   ├── dashboard.html     # Camera dashboard
-│   │   ├── add_camera.html    # Add camera form
-│   │   └── stream.html        # Camera stream viewer
-│   │
-│   └── subscription/
-│       └── pricing.html       # Subscription plans
-│
-├── static/                    # Static files (CSS, JS, images)
-│   ├── css/
-│   ├── js/
-│   └── images/
-│
-└── tests/                     # Test files
-    ├── __init__.py
-    ├── test_auth.py
-    ├── test_camera.py
-    └── test_subscription.py
-```
-
-## How to Set Up the Structured Application
-
-### 1. Create the Directory Structure
-
-```bash
-mkdir security_system
-cd security_system
-
-# Create main directories
-mkdir models services routes utils templates static tests
-
-# Create subdirectories
-mkdir templates/auth templates/camera templates/subscription
-mkdir static/css static/js static/images
-
-# Create __init__.py files
-touch models/__init__.py services/__init__.py routes/__init__.py utils/__init__.py tests/__init__.py
-```
-
-### 2. Create Individual Files
-
-**models/__init__.py**
-```python
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import UserMixin
-from datetime import datetime, timedelta
-
-# Import models here
-from .user import User, Camera
-```
-
-**models/user.py**
-```python
-from app import db, login_manager
-from flask_login import UserMixin
-from datetime import datetime, timedelta
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-class User(UserMixin, db.Model):
-    # ... (User model code from the main file)
-
-class Camera(db.Model):
-    # ... (Camera model code from the main file)
-```
-
-**services/__init__.py**
-```python
-from .camera_service import CameraService
-from .subscription_service import SubscriptionService
-```
-
-**routes/__init__.py**
-```python
-from .main import main_bp
-from .auth import auth_bp
-from .camera import camera_bp
-from .subscription import subscription_bp
-```
-
-### 3. Environment Variables (.env)
-
-```bash
-# Flask Configuration
-SECRET_KEY=your-super-secret-key-change-this
-FLASK_ENV=development
-DATABASE_URL=sqlite:///security_app.db
-
-# Stripe Configuration
-STRIPE_SECRET_KEY=sk_test_your_stripe_secret_key
-STRIPE_PUBLISHABLE_KEY=pk_test_your_stripe_publishable_key
-STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
-
-# Email Configuration (optional)
-MAIL_SERVER=smtp.gmail.com
-MAIL_PORT=587
-MAIL_USE_TLS=True
-MAIL_USERNAME=your-email@gmail.com
-MAIL_PASSWORD=your-app-password
-```
-
-### 4. .gitignore
-
-```gitignore
-# Environment variables
-.env
-.env.local
-.env.production
-
-# Database
-*.db
-*.sqlite
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Logs
-*.log
-logs/
-
-# YOLO models (optional - these are large)
-*.pt
-```
-
-### 5. Updated requirements.txt
-
-```txt
-# Core Flask
-Flask==2.3.3
-Flask-SQLAlchemy==3.0.5
+# Core Flask and web dependencies
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
 Flask-Bcrypt==1.0.1
 Flask-Login==0.6.3
-Flask-Mail==0.9.1
 
-# Computer Vision and AI
-opencv-python==4.8.0.76
+# Computer Vision and AI - Updated versions for better compatibility
+opencv-python-headless==4.8.1.78
 ultralytics==8.0.200
-cvzone==1.6.1
+# cvzone==1.6.1  # Commented out - often causes issues on cloud platforms
 
 # Database
-SQLAlchemy==2.0.21
+SQLAlchemy==2.0.23
 
 # Payment Processing
-stripe==6.6.0
+stripe==7.8.0
 
-# Environment Management
-python-dotenv==1.0.0
+# Image processing - Updated for Python 3.13 compatibility
+Pillow>=10.1.0
+numpy>=1.24.3
 
-# Image Processing
-Pillow==10.0.0
-numpy==1.24.3
-
-# Production Server
+# Web server (for production)
 gunicorn==21.2.0
 
-# Testing
-pytest==7.4.0
-pytest-flask==1.2.0
+# Environment variables
+python-dotenv==1.0.0
 
-# Development
-Flask-DebugToolbar==0.13.1
-```
+# Date/time utilities
+pytz==2023.3
 
-## Key Benefits of This Structure
-
-### 🎯 **Separation of Concerns**
-- **Models**: Database logic separated from business logic
-- **Services**: Business logic isolated from route handlers
-- **Routes**: Clean, focused route handlers using blueprints
-- **Utils**: Reusable utilities and decorators
-
-### 🔧 **Maintainability**
-- Each component has a single responsibility
-- Easy to locate and modify specific functionality
-- Clear import structure and dependencies
-
-### 🧪 **Testability**
-- Services can be tested independently
-- Models can be unit tested
-- Routes can be integration tested
-
-### 📈 **Scalability**
-- Easy to add new features without affecting existing code
-- Blueprint structure allows for feature-based organization
-- Clear separation makes team collaboration easier
-
-### 🚀 **Production Ready**
-- Configuration management with environment variables
-- Proper error handling and logging structure
-- Security best practices built-in
-
-## Quick Start Commands
-
-```bash
-# 1. Clone/create the project
-mkdir security_system && cd security_system
-
-# 2. Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Set up environment variables
-cp .env.example .env
-# Edit .env with your actual values
-
-# 5. Initialize database
-python -c "from app import create_app, db; app = create_app(); app.app_context().push(); db.create_all()"
-
-# 6. Run the application
-python app.py
-```
-
-## Testing
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test file
-pytest tests/test_auth.py
-
-# Run with coverage
-pytest --cov=app tests/
-```
-
-This structured approach makes the application much more professional, maintainable, and scalable! 🚀
+# Additional dependencies that might be needed
+Werkzeug==3.0.1
+Jinja2==3.1.2
+itsdangerous==2.1.2
+click==8.1.7
+MarkupSafe==2.1.3
