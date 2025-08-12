@@ -1,4 +1,4 @@
-# app.py - Deployment ready version
+# app.py - Deployment ready version with fixed database initialization
 import math
 import cv2
 # import cvzone  # Commented out for deployment compatibility
@@ -20,8 +20,19 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///security_app.db')
+
+# Fix database URL for deployment
+database_url = os.environ.get('DATABASE_URL', 'sqlite:///security_app.db')
+if database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_timeout': 20,
+    'pool_recycle': -1,
+    'pool_pre_ping': True
+}
 
 # Stripe configuration
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', "sk_test_your_stripe_secret_key")
@@ -59,6 +70,8 @@ classNames = [
 
 # Database Models
 class User(UserMixin, db.Model):
+    __tablename__ = 'users'  # Explicitly define table name
+    
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(20), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
@@ -80,17 +93,23 @@ class User(UserMixin, db.Model):
         return limits.get(self.subscription_plan, 1)
 
 class Camera(db.Model):
+    __tablename__ = 'cameras'  # Explicitly define table name
+    
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     camera_url = db.Column(db.String(200), nullable=True)
     camera_type = db.Column(db.String(20), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # User loader
 @login_manager.user_loader
 def load_user(user_id):
-    return db.session.get(User, int(user_id))
+    try:
+        return db.session.get(User, int(user_id))
+    except Exception as e:
+        logger.error(f"Error loading user {user_id}: {e}")
+        return None
 
 # Subscription decorator
 def subscription_required(f):
@@ -191,17 +210,24 @@ def create_error_frame(message):
 def generate_frames(camera_id):
     """Generate video frames for streaming"""
     with app.app_context():
-        camera = db.session.get(Camera, camera_id)
-        if not camera:
-            logger.error(f"Camera {camera_id} not found")
-            error_frame = create_error_frame("Camera not found")
+        try:
+            camera = db.session.get(Camera, camera_id)
+            if not camera:
+                logger.error(f"Camera {camera_id} not found")
+                error_frame = create_error_frame("Camera not found")
+                while True:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
+            
+            camera_type = camera.camera_type
+            camera_url = camera.camera_url
+            camera_name = camera.name
+        except Exception as e:
+            logger.error(f"Database error accessing camera {camera_id}: {e}")
+            error_frame = create_error_frame("Database error")
             while True:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
-        
-        camera_type = camera.camera_type
-        camera_url = camera.camera_url
-        camera_name = camera.name
     
     logger.info(f"Starting video stream for camera {camera_id}: {camera_name}")
     cap = get_camera_capture(camera_type, camera_url)
@@ -243,6 +269,31 @@ def generate_frames(camera_id):
             cap.release()
             logger.info(f"Camera {camera_id} released")
 
+# Initialize database function
+def init_db():
+    """Initialize the database with proper error handling"""
+    try:
+        with app.app_context():
+            # Drop all tables and recreate (be careful in production!)
+            db.drop_all()
+            db.create_all()
+            logger.info("Database tables created successfully")
+            
+            # Create a test user if none exists
+            if User.query.first() is None:
+                test_user = User(
+                    username='admin',
+                    email='admin@example.com',
+                    password=bcrypt.generate_password_hash('password123').decode('utf-8')
+                )
+                db.session.add(test_user)
+                db.session.commit()
+                logger.info("Test admin user created: admin@example.com / password123")
+                
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        raise
+
 # Routes
 @app.route('/')
 def home():
@@ -251,40 +302,51 @@ def home():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username']
-        email = request.form['email']
-        password = request.form['password']
-        
-        existing_user = User.query.filter_by(email=email).first()
-        if existing_user:
-            flash('Email already registered. Please log in.', 'danger')
+        try:
+            username = request.form['username']
+            email = request.form['email']
+            password = request.form['password']
+            
+            existing_user = User.query.filter_by(email=email).first()
+            if existing_user:
+                flash('Email already registered. Please log in.', 'danger')
+                return redirect(url_for('login'))
+            
+            hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+            user = User(username=username, email=email, password=hashed_password)
+            
+            db.session.add(user)
+            db.session.commit()
+            
+            flash('Account created successfully! Please log in.', 'success')
             return redirect(url_for('login'))
-        
-        hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-        user = User(username=username, email=email, password=hashed_password)
-        
-        db.session.add(user)
-        db.session.commit()
-        
-        flash('Account created successfully! Please log in.', 'success')
-        return redirect(url_for('login'))
+            
+        except Exception as e:
+            logger.error(f"Registration error: {e}")
+            db.session.rollback()
+            flash('Registration failed. Please try again.', 'danger')
     
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        
-        user = User.query.filter_by(email=email).first()
-        
-        if user and bcrypt.check_password_hash(user.password, password):
-            login_user(user, remember=request.form.get('remember'))
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('dashboard'))
-        else:
-            flash('Login failed. Please check email and password.', 'danger')
+        try:
+            email = request.form['email']
+            password = request.form['password']
+            
+            user = User.query.filter_by(email=email).first()
+            
+            if user and bcrypt.check_password_hash(user.password, password):
+                login_user(user, remember=request.form.get('remember'))
+                next_page = request.args.get('next')
+                return redirect(next_page) if next_page else redirect(url_for('dashboard'))
+            else:
+                flash('Login failed. Please check email and password.', 'danger')
+                
+        except Exception as e:
+            logger.error(f"Login error: {e}")
+            flash('Login failed. Please try again.', 'danger')
     
     return render_template('login.html')
 
@@ -297,34 +359,45 @@ def logout():
 @login_required
 @subscription_required
 def dashboard():
-    cameras = Camera.query.filter_by(user_id=current_user.id).all()
-    return render_template('dashboard.html', cameras=cameras, user=current_user)
+    try:
+        cameras = Camera.query.filter_by(user_id=current_user.id).all()
+        return render_template('dashboard.html', cameras=cameras, user=current_user)
+    except Exception as e:
+        logger.error(f"Dashboard error: {e}")
+        flash('Error loading dashboard. Please try again.', 'danger')
+        return render_template('dashboard.html', cameras=[], user=current_user)
 
 @app.route('/add_camera', methods=['GET', 'POST'])
 @login_required
 @subscription_required
 def add_camera():
-    if len(current_user.cameras) >= current_user.camera_limit:
-        flash(f'You have reached your camera limit ({current_user.camera_limit}). Please upgrade your plan.', 'warning')
-        return redirect(url_for('pricing'))
-    
-    if request.method == 'POST':
-        name = request.form['name']
-        camera_type = request.form['type']
-        camera_url = request.form.get('camera_url') if camera_type == 'ip' else None
+    try:
+        if len(current_user.cameras) >= current_user.camera_limit:
+            flash(f'You have reached your camera limit ({current_user.camera_limit}). Please upgrade your plan.', 'warning')
+            return redirect(url_for('pricing'))
         
-        camera = Camera(
-            name=name,
-            camera_type=camera_type,
-            camera_url=camera_url,
-            user_id=current_user.id
-        )
-        
-        db.session.add(camera)
-        db.session.commit()
-        
-        flash('Camera added successfully!', 'success')
-        return redirect(url_for('dashboard'))
+        if request.method == 'POST':
+            name = request.form['name']
+            camera_type = request.form['type']
+            camera_url = request.form.get('camera_url') if camera_type == 'ip' else None
+            
+            camera = Camera(
+                name=name,
+                camera_type=camera_type,
+                camera_url=camera_url,
+                user_id=current_user.id
+            )
+            
+            db.session.add(camera)
+            db.session.commit()
+            
+            flash('Camera added successfully!', 'success')
+            return redirect(url_for('dashboard'))
+            
+    except Exception as e:
+        logger.error(f"Add camera error: {e}")
+        db.session.rollback()
+        flash('Error adding camera. Please try again.', 'danger')
     
     return render_template('add_camera.html')
 
@@ -332,36 +405,51 @@ def add_camera():
 @login_required
 @subscription_required
 def stream(camera_id):
-    camera = db.session.get(Camera, camera_id)
-    if not camera or camera.owner != current_user:
-        flash('Access denied.', 'danger')
+    try:
+        camera = db.session.get(Camera, camera_id)
+        if not camera or camera.owner != current_user:
+            flash('Access denied.', 'danger')
+            return redirect(url_for('dashboard'))
+        
+        return render_template('stream.html', camera=camera)
+    except Exception as e:
+        logger.error(f"Stream route error: {e}")
+        flash('Error accessing camera stream.', 'danger')
         return redirect(url_for('dashboard'))
-    
-    return render_template('stream.html', camera=camera)
 
 @app.route('/video/<int:camera_id>')
 @login_required
 @subscription_required
 def video(camera_id):
-    camera = db.session.get(Camera, camera_id)
-    if not camera or camera.owner != current_user:
-        return "Access denied", 403
-    
-    logger.info(f"Starting video stream for camera {camera_id}")
-    return Response(generate_frames(camera_id),
-                   mimetype='multipart/x-mixed-replace; boundary=frame')
+    try:
+        camera = db.session.get(Camera, camera_id)
+        if not camera or camera.owner != current_user:
+            return "Access denied", 403
+        
+        logger.info(f"Starting video stream for camera {camera_id}")
+        return Response(generate_frames(camera_id),
+                       mimetype='multipart/x-mixed-replace; boundary=frame')
+    except Exception as e:
+        logger.error(f"Video route error: {e}")
+        return "Video stream error", 500
 
 @app.route('/delete_camera/<int:camera_id>')
 @login_required
 def delete_camera(camera_id):
-    camera = db.session.get(Camera, camera_id)
-    if not camera or camera.owner != current_user:
-        flash('Access denied.', 'danger')
-        return redirect(url_for('dashboard'))
+    try:
+        camera = db.session.get(Camera, camera_id)
+        if not camera or camera.owner != current_user:
+            flash('Access denied.', 'danger')
+            return redirect(url_for('dashboard'))
+        
+        db.session.delete(camera)
+        db.session.commit()
+        flash('Camera deleted successfully!', 'success')
+    except Exception as e:
+        logger.error(f"Delete camera error: {e}")
+        db.session.rollback()
+        flash('Error deleting camera. Please try again.', 'danger')
     
-    db.session.delete(camera)
-    db.session.commit()
-    flash('Camera deleted successfully!', 'success')
     return redirect(url_for('dashboard'))
 
 @app.route('/pricing')
@@ -377,19 +465,51 @@ def account():
 @login_required
 def test_camera(camera_id):
     """Test camera connection"""
-    camera = db.session.get(Camera, camera_id)
-    if not camera or camera.owner != current_user:
-        return "Access denied", 403
-    
-    cap = get_camera_capture(camera.camera_type, camera.camera_url)
-    if cap:
-        cap.release()
-        return "✅ Camera connection successful"
-    else:
-        return "❌ Camera connection failed"
+    try:
+        camera = db.session.get(Camera, camera_id)
+        if not camera or camera.owner != current_user:
+            return "Access denied", 403
+        
+        cap = get_camera_capture(camera.camera_type, camera.camera_url)
+        if cap:
+            cap.release()
+            return "✅ Camera connection successful"
+        else:
+            return "❌ Camera connection failed"
+    except Exception as e:
+        logger.error(f"Test camera error: {e}")
+        return f"❌ Camera test failed: {str(e)}"
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint for deployment platforms"""
+    try:
+        # Test database connection
+        User.query.first()
+        return {'status': 'healthy', 'database': 'connected'}, 200
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {'status': 'unhealthy', 'error': str(e)}, 500
+
+# Error handlers
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    db.session.rollback()
+    logger.error(f"Internal server error: {error}")
+    return render_template('500.html'), 500
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    try:
+        # Initialize database
+        init_db()
+        
+        # Start the app
+        port = int(os.environ.get('PORT', 5000))
+        app.run(host="0.0.0.0", port=port, debug=False)
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        raise
