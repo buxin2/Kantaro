@@ -502,6 +502,34 @@ def internal_error(error):
     logger.error(f"Internal server error: {error}")
     return render_template('500.html'), 500
 
+
+@app.route('/setup-database')
+def setup_database():
+    """Create database tables - visit this URL once after deployment"""
+    try:
+        db.create_all()
+        
+        # Create test user
+        from flask_bcrypt import Bcrypt
+        bcrypt = Bcrypt(app)
+        
+        # Import your User model (adjust import based on your structure)
+        from models.user import User  # or wherever your User model is
+        
+        test_user = User(
+            username='admin',
+            email='admin@example.com', 
+            password=bcrypt.generate_password_hash('password123').decode('utf-8')
+        )
+        
+        db.session.add(test_user)
+        db.session.commit()
+        
+        return "SUCCESS! Database created. You can now login with admin@example.com / password123"
+        
+    except Exception as e:
+        return f"Error: {e}"
+
 if __name__ == "__main__":
     try:
         # Initialize database
