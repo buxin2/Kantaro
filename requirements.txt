@@ -1,6 +1,56 @@
-Flask==2.3.0
-gunicorn==20.1.0
+# Core Flask dependencies
+Flask==2.3.3
 Flask-SQLAlchemy==3.0.5
 Flask-Bcrypt==1.0.1
 Flask-Login==0.6.3
+
+# Database
+SQLAlchemy==2.0.23
+
+# Computer Vision and AI
+opencv-python==4.8.1.78
+numpy==1.24.3
+ultralytics==8.0.196
+
+# Payment Processing
+stripe==6.7.0
+
+# Production Server
+gunicorn==21.2.0
+
+# Database Drivers (optional - uncomment as needed)
+# PostgreSQL driver for production deployment
+psycopg2-binary==2.9.7
+
+# Alternative PostgreSQL driver (lighter)
+# psycopg2==2.9.7
+
+# MySQL driver (if using MySQL)
+# PyMySQL==1.1.0
+
+# Additional dependencies that might be needed
+Werkzeug==2.3.7
+Jinja2==3.1.2
+MarkupSafe==2.1.3
+itsdangerous==2.1.2
+click==8.1.7
+
+# For handling datetime operations
+python-dateutil==2.8.2
+
+# Security and cryptography
+cryptography==41.0.7
+
+# Environment variable management (optional but recommended)
 python-dotenv==1.0.0
+
+# Logging (already in Python standard library, but for enhanced logging)
+# colorlog==6.7.0
+
+# For better error handling in production
+# sentry-sdk[flask]==1.38.0
+
+# Development dependencies (optional - for development only)
+# pytest==7.4.3
+# pytest-flask==1.3.0
+# flask-testing==0.8.1
