@@ -4,8 +4,8 @@ setuptools>=70.0.0
 wheel>=0.43.0
 
 # Core Flask framework
-Flask==2.3.3
-Werkzeug==2.3.7
+Flask==2.3.0
+Werkzeug==2.3.0
 
 # Database
 SQLAlchemy==2.0.23
