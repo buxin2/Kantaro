@@ -1,36 +1,32 @@
-# app.py - Updated deployment-ready version with full features
-import os
+# app.py - Deployment ready version
+import math
 import cv2
-import numpy as np
-from flask import Flask, Response, render_template, request, redirect, url_for, flash, jsonify
+# import cvzone  # Commented out for deployment compatibility
+from ultralytics import YOLO
+from flask import Flask, Response, render_template, request, redirect, url_for, session, flash, jsonify, current_app, copy_current_request_context
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from datetime import datetime, timedelta
 import stripe
+import os
 from functools import wraps
 import logging
+import threading
 
-# Configure logging
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
-# Configuration - Use environment variables for production
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
 app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///security_app.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Fix for PostgreSQL URL format (Render/Heroku compatibility)
-if app.config['SQLALCHEMY_DATABASE_URI'] and app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
-    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://', 1)
-
 # Stripe configuration
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', 'sk_test_your_stripe_secret_key')
-STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', 'pk_test_your_stripe_publishable_key')
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', "sk_test_your_stripe_secret_key")
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', "pk_test_your_stripe_publishable_key")
 
-# Initialize extensions
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 login_manager = LoginManager()
@@ -38,22 +34,14 @@ login_manager.init_app(app)
 login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
 
-# Try to load YOLO model - fallback gracefully if not available
+# Load YOLO model
 try:
-    from ultralytics import YOLO
     model = YOLO("yolov8n.pt")
-    YOLO_AVAILABLE = True
     logger.info("YOLO model loaded successfully")
-except ImportError:
-    logger.warning("YOLO not available - running in demo mode")
-    model = None
-    YOLO_AVAILABLE = False
 except Exception as e:
-    logger.warning(f"YOLO model loading failed: {e} - running in demo mode")
+    logger.error(f"Error loading YOLO model: {e}")
     model = None
-    YOLO_AVAILABLE = False
 
-# YOLO class names for object detection
 classNames = [
     "person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train",
     "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter",
@@ -79,7 +67,6 @@ class User(UserMixin, db.Model):
     subscription_end = db.Column(db.DateTime, nullable=True)
     stripe_customer_id = db.Column(db.String(50), nullable=True)
     cameras = db.relationship('Camera', backref='owner', lazy=True, cascade='all, delete-orphan')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     @property
     def is_subscription_active(self):
@@ -100,11 +87,12 @@ class Camera(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# User loader
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
 
-# Decorators
+# Subscription decorator
 def subscription_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -114,9 +102,9 @@ def subscription_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Helper functions for camera processing
+# Simple bounding box drawing function (replacement for cvzone)
 def draw_bounding_box(frame, x1, y1, x2, y2, label, conf):
-    """Draw bounding box and label without external dependencies"""
+    """Draw bounding box and label without cvzone dependency"""
     # Draw rectangle
     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
     
@@ -132,51 +120,44 @@ def draw_bounding_box(frame, x1, y1, x2, y2, label, conf):
     # Draw label text
     cv2.putText(frame, label_text, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
 
-def create_demo_frame():
-    """Create a demo frame showing AI detection simulation"""
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    
-    # Create gradient background
-    for i in range(480):
-        intensity = int(30 + (i / 480) * 80)
-        frame[i, :] = [intensity, intensity//2, intensity//3]
-    
-    # Add main title
-    cv2.putText(frame, "AI Security Camera System", (120, 60), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    
-    # Add subtitle based on YOLO availability
-    if YOLO_AVAILABLE:
-        cv2.putText(frame, "YOLOv8 Object Detection Active", (140, 100), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 255, 100), 2)
-    else:
-        cv2.putText(frame, "Demo Mode - AI Detection Ready", (140, 100), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 100), 2)
-    
-    # Add simulated detections
-    detections = [
-        (100, 150, 200, 220, "person", 0.95),
-        (400, 160, 520, 240, "car", 0.87),
-        (250, 180, 350, 250, "bicycle", 0.78)
-    ]
-    
-    for x1, y1, x2, y2, label, conf in detections:
-        draw_bounding_box(frame, x1, y1, x2, y2, label, conf)
-    
-    # Add status info
-    cv2.putText(frame, f"Status: {'AI Active' if YOLO_AVAILABLE else 'Demo Mode'}", (20, 450), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    cv2.putText(frame, "Objects Detected: 3", (350, 450), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-    
-    return frame
-
-def process_frame_with_yolo(frame):
-    """Process frame with YOLO if available, otherwise return demo frame"""
-    if not YOLO_AVAILABLE or model is None:
-        return create_demo_frame()
-    
+def get_camera_capture(camera_type, camera_url=None):
+    """Initialize camera capture"""
     try:
+        if camera_type == 'ip' and camera_url:
+            logger.info(f"Connecting to IP camera: {camera_url}")
+            cap = cv2.VideoCapture(camera_url)
+        else:
+            logger.info("Connecting to device camera")
+            cap = cv2.VideoCapture(0)
+        
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            
+            # Test connection
+            ret, frame = cap.read()
+            if not ret:
+                logger.error("Failed to read from camera")
+                cap.release()
+                return None
+            
+            logger.info("Camera connected successfully")
+            return cap
+        else:
+            logger.error("Failed to open camera")
+            return None
+    except Exception as e:
+        logger.error(f"Error connecting to camera: {e}")
+        return None
+
+def process_frame(frame):
+    """Process frame with YOLO detection"""
+    try:
+        if model is None:
+            _, buffer = cv2.imencode('.jpg', frame)
+            return buffer.tobytes()
+        
         results = model(frame, stream=True, verbose=False)
         
         for r in results:
@@ -190,73 +171,82 @@ def process_frame_with_yolo(frame):
                         detected_class = classNames[cls]
                         draw_bounding_box(frame, x1, y1, x2, y2, detected_class, conf)
         
-        return frame
+        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        return buffer.tobytes()
     except Exception as e:
-        logger.error(f"YOLO processing error: {e}")
-        return create_demo_frame()
+        logger.error(f"Error processing frame: {e}")
+        _, buffer = cv2.imencode('.jpg', frame)
+        return buffer.tobytes()
+
+def create_error_frame(message):
+    """Create error frame"""
+    import numpy as np
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.putText(frame, "Camera Error", (200, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    cv2.putText(frame, message, (50, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    cv2.putText(frame, "Check camera connection", (150, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    _, buffer = cv2.imencode('.jpg', frame)
+    return buffer.tobytes()
 
 def generate_frames(camera_id):
     """Generate video frames for streaming"""
-    # Get camera info
     with app.app_context():
         camera = db.session.get(Camera, camera_id)
         if not camera:
             logger.error(f"Camera {camera_id} not found")
-            # Generate error frames
+            error_frame = create_error_frame("Camera not found")
             while True:
-                error_frame = create_demo_frame()
-                cv2.putText(error_frame, "Camera Not Found", (200, 240), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                _, buffer = cv2.imencode('.jpg', error_frame)
                 yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                       b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
+        
+        camera_type = camera.camera_type
+        camera_url = camera.camera_url
+        camera_name = camera.name
     
-    logger.info(f"Starting stream for camera {camera_id}: {camera.name}")
+    logger.info(f"Starting video stream for camera {camera_id}: {camera_name}")
+    cap = get_camera_capture(camera_type, camera_url)
     
-    # For demo purposes, generate simulated frames
-    # In production, this would connect to actual cameras
-    frame_count = 0
-    while True:
-        try:
-            if camera.camera_type == 'device':
-                # Try to connect to actual device camera
-                cap = cv2.VideoCapture(0)
-                if cap.isOpened():
-                    ret, frame = cap.read()
+    if cap is None:
+        error_frame = create_error_frame("Failed to connect to camera")
+        while True:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
+    
+    try:
+        frame_count = 0
+        while True:
+            success, frame = cap.read()
+            if not success:
+                logger.warning(f"Failed to read frame {frame_count}")
+                if frame_count % 30 == 0:
                     cap.release()
-                    if ret:
-                        processed_frame = process_frame_with_yolo(frame)
-                    else:
-                        processed_frame = create_demo_frame()
-                else:
-                    processed_frame = create_demo_frame()
-            else:
-                # For IP cameras or demo mode
-                processed_frame = create_demo_frame()
+                    cap = get_camera_capture(camera_type, camera_url)
+                    if cap is None:
+                        error_frame = create_error_frame("Camera reconnection failed")
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
+                        continue
+                continue
             
-            # Add frame counter for dynamic demo
             frame_count += 1
-            cv2.putText(processed_frame, f"Frame: {frame_count}", (20, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            
-            _, buffer = cv2.imencode('.jpg', processed_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            frame_bytes = process_frame(frame)
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
             
-        except Exception as e:
-            logger.error(f"Frame generation error: {e}")
-            # Generate error frame
-            error_frame = create_demo_frame()
-            cv2.putText(error_frame, "Stream Error", (200, 240), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            _, buffer = cv2.imencode('.jpg', error_frame)
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+    except Exception as e:
+        logger.error(f"Error in frame generation: {e}")
+        error_frame = create_error_frame(f"Streaming error: {str(e)}")
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + error_frame + b'\r\n')
+    finally:
+        if cap:
+            cap.release()
+            logger.info(f"Camera {camera_id} released")
 
 # Routes
 @app.route('/')
 def home():
-    return render_template('home.html', yolo_available=YOLO_AVAILABLE)
+    return render_template('home.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -308,7 +298,7 @@ def logout():
 @subscription_required
 def dashboard():
     cameras = Camera.query.filter_by(user_id=current_user.id).all()
-    return render_template('dashboard.html', cameras=cameras, user=current_user, yolo_available=YOLO_AVAILABLE)
+    return render_template('dashboard.html', cameras=cameras, user=current_user)
 
 @app.route('/add_camera', methods=['GET', 'POST'])
 @login_required
@@ -333,8 +323,7 @@ def add_camera():
         db.session.add(camera)
         db.session.commit()
         
-        mode_msg = "with AI detection" if YOLO_AVAILABLE else "in demo mode"
-        flash(f'Camera "{name}" added successfully {mode_msg}!', 'success')
+        flash('Camera added successfully!', 'success')
         return redirect(url_for('dashboard'))
     
     return render_template('add_camera.html')
@@ -348,7 +337,7 @@ def stream(camera_id):
         flash('Access denied.', 'danger')
         return redirect(url_for('dashboard'))
     
-    return render_template('stream.html', camera=camera, yolo_available=YOLO_AVAILABLE)
+    return render_template('stream.html', camera=camera)
 
 @app.route('/video/<int:camera_id>')
 @login_required
@@ -358,6 +347,7 @@ def video(camera_id):
     if not camera or camera.owner != current_user:
         return "Access denied", 403
     
+    logger.info(f"Starting video stream for camera {camera_id}")
     return Response(generate_frames(camera_id),
                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
@@ -383,36 +373,23 @@ def pricing():
 def account():
     return render_template('account.html', user=current_user)
 
-@app.route('/health')
-def health():
-    return {
-        'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'version': '2.0.0',
-        'yolo_available': YOLO_AVAILABLE,
-        'features': [
-            'User Authentication',
-            'Camera Management',
-            'Live Streaming',
-            'AI Object Detection' if YOLO_AVAILABLE else 'Demo Mode',
-            'Subscription Management'
-        ]
-    }
-
-# Initialize database
-def create_tables():
-    """Initialize database tables"""
-    with app.app_context():
-        try:
-            db.create_all()
-            logger.info("Database tables created successfully")
-        except Exception as e:
-            logger.error(f"Error creating database: {e}")
+@app.route('/test_camera/<int:camera_id>')
+@login_required
+def test_camera(camera_id):
+    """Test camera connection"""
+    camera = db.session.get(Camera, camera_id)
+    if not camera or camera.owner != current_user:
+        return "Access denied", 403
+    
+    cap = get_camera_capture(camera.camera_type, camera.camera_url)
+    if cap:
+        cap.release()
+        return "✅ Camera connection successful"
+    else:
+        return "❌ Camera connection failed"
 
 if __name__ == "__main__":
-    create_tables()
+    with app.app_context():
+        db.create_all()
     port = int(os.environ.get('PORT', 5000))
-    app.run(host="0.0.0.0", port=port, debug=os.environ.get('FLASK_ENV') == 'development')
-else:
-    # For Gunicorn deployment
-    create_tables()
+    app.run(host="0.0.0.0", port=port, debug=False)
