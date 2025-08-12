@@ -1,7 +1,6 @@
-# app.py - Deployment ready version with fixed database initialization
+# app.py - Fixed version with proper database initialization
 import math
 import cv2
-# import cvzone  # Commented out for deployment compatibility
 from ultralytics import YOLO
 from flask import Flask, Response, render_template, request, redirect, url_for, session, flash, jsonify, current_app, copy_current_request_context
 from flask_sqlalchemy import SQLAlchemy
@@ -70,7 +69,7 @@ classNames = [
 
 # Database Models
 class User(UserMixin, db.Model):
-    __tablename__ = 'users'  # Explicitly define table name
+    __tablename__ = 'users'
     
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(20), unique=True, nullable=False)
@@ -93,7 +92,7 @@ class User(UserMixin, db.Model):
         return limits.get(self.subscription_plan, 1)
 
 class Camera(db.Model):
-    __tablename__ = 'cameras'  # Explicitly define table name
+    __tablename__ = 'cameras'
     
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
@@ -268,31 +267,6 @@ def generate_frames(camera_id):
         if cap:
             cap.release()
             logger.info(f"Camera {camera_id} released")
-
-# Initialize database function
-def init_db():
-    """Initialize the database with proper error handling"""
-    try:
-        with app.app_context():
-            # Drop all tables and recreate (be careful in production!)
-            db.drop_all()
-            db.create_all()
-            logger.info("Database tables created successfully")
-            
-            # Create a test user if none exists
-            if User.query.first() is None:
-                test_user = User(
-                    username='admin',
-                    email='admin@example.com',
-                    password=bcrypt.generate_password_hash('password123').decode('utf-8')
-                )
-                db.session.add(test_user)
-                db.session.commit()
-                logger.info("Test admin user created: admin@example.com / password123")
-                
-    except Exception as e:
-        logger.error(f"Error initializing database: {e}")
-        raise
 
 # Routes
 @app.route('/')
@@ -491,31 +465,21 @@ def health_check():
         logger.error(f"Health check failed: {e}")
         return {'status': 'unhealthy', 'error': str(e)}, 500
 
-# Error handlers
-@app.errorhandler(404)
-def not_found_error(error):
-    return render_template('404.html'), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    db.session.rollback()
-    logger.error(f"Internal server error: {error}")
-    return render_template('500.html'), 500
-
-
+# FIXED: Database initialization route
 @app.route('/setup-database')
 def setup_database():
     """Create database tables - visit this URL once after deployment"""
     try:
+        # Create all tables
         db.create_all()
+        logger.info("Database tables created successfully")
+        
+        # Check if admin user already exists
+        existing_admin = User.query.filter_by(email='admin@example.com').first()
+        if existing_admin:
+            return "Database already initialized. Admin user exists."
         
         # Create test user
-        from flask_bcrypt import Bcrypt
-        bcrypt = Bcrypt(app)
-        
-        # Import your User model (adjust import based on your structure)
-        from models.user import User  # or wherever your User model is
-        
         test_user = User(
             username='admin',
             email='admin@example.com', 
@@ -524,11 +488,83 @@ def setup_database():
         
         db.session.add(test_user)
         db.session.commit()
+        logger.info("Test admin user created")
         
         return "SUCCESS! Database created. You can now login with admin@example.com / password123"
         
     except Exception as e:
-        return f"Error: {e}"
+        logger.error(f"Database setup error: {e}")
+        db.session.rollback()
+        return f"Error: {e}", 500
+
+# FIXED: Add favicon route to prevent 404 errors
+@app.route('/favicon.ico')
+def favicon():
+    return "", 204
+
+# Error handlers - FIXED with simple error messages instead of missing templates
+@app.errorhandler(404)
+def not_found_error(error):
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head><title>404 Not Found</title></head>
+    <body>
+        <h1>404 - Page Not Found</h1>
+        <p>The requested page could not be found.</p>
+        <p><a href="/">Return to Home</a></p>
+    </body>
+    </html>
+    """, 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    db.session.rollback()
+    logger.error(f"Internal server error: {error}")
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head><title>500 Internal Server Error</title></head>
+    <body>
+        <h1>500 - Internal Server Error</h1>
+        <p>Something went wrong. Please try again later.</p>
+        <p><a href="/">Return to Home</a></p>
+    </body>
+    </html>
+    """, 500
+
+# FIXED: Proper database initialization
+def init_db():
+    """Initialize the database with proper error handling"""
+    try:
+        with app.app_context():
+            # Check if tables exist
+            inspector = db.inspect(db.engine)
+            existing_tables = inspector.get_table_names()
+            
+            if 'users' not in existing_tables or 'cameras' not in existing_tables:
+                logger.info("Creating database tables...")
+                db.create_all()
+                logger.info("Database tables created successfully")
+                
+                # Create admin user if it doesn't exist
+                admin_user = User.query.filter_by(email='admin@example.com').first()
+                if not admin_user:
+                    admin_user = User(
+                        username='admin',
+                        email='admin@example.com',
+                        password=bcrypt.generate_password_hash('password123').decode('utf-8')
+                    )
+                    db.session.add(admin_user)
+                    db.session.commit()
+                    logger.info("Admin user created: admin@example.com / password123")
+            else:
+                logger.info("Database tables already exist")
+                
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        # Don't raise the exception in production, just log it
+        pass
 
 if __name__ == "__main__":
     try:
