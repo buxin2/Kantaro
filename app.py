@@ -383,6 +383,108 @@ def debug_cameras():
         <p><a href="/dashboard">Back to Dashboard</a></p>
         """
 
+
+@app.route('/debug-cameras')
+@login_required
+def debug_cameras():
+    """Simple debug route to see what's happening"""
+    try:
+        # Get cameras for current user
+        user_cameras = Camera.query.filter_by(user_id=current_user.id).all()
+        
+        # Get all cameras
+        all_cameras = Camera.query.all()
+        
+        # Create simple HTML response
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Camera Debug</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }}
+                .camera {{ background: #e9ecef; padding: 10px; margin: 5px 0; border-radius: 3px; }}
+                .btn {{ padding: 8px 16px; margin: 5px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; }}
+            </style>
+        </head>
+        <body>
+            <h1>🔍 Camera Debug Information</h1>
+            
+            <div class="info">
+                <h2>Current User:</h2>
+                <p>ID: {current_user.id}</p>
+                <p>Email: {current_user.email}</p>
+                <p>Username: {current_user.username}</p>
+                <p>Camera Limit: {current_user.camera_limit}</p>
+                <p>Subscription: {current_user.subscription_plan}</p>
+            </div>
+            
+            <div class="info">
+                <h2>Your Cameras ({len(user_cameras)}):</h2>
+        """
+        
+        if user_cameras:
+            for camera in user_cameras:
+                html += f"""
+                <div class="camera">
+                    <strong>Name:</strong> {camera.name}<br>
+                    <strong>ID:</strong> {camera.id}<br>
+                    <strong>Type:</strong> {camera.camera_type}<br>
+                    <strong>User ID:</strong> {camera.user_id}<br>
+                    <strong>Created:</strong> {camera.created_at}<br>
+                    <strong>URL:</strong> {camera.camera_url or 'None'}
+                </div>
+                """
+        else:
+            html += "<p style='color: red;'>❌ No cameras found for your user ID!</p>"
+        
+        html += f"""
+            </div>
+            
+            <div class="info">
+                <h2>All Cameras in Database ({len(all_cameras)}):</h2>
+        """
+        
+        if all_cameras:
+            for camera in all_cameras:
+                html += f"""
+                <div class="camera">
+                    <strong>Name:</strong> {camera.name} 
+                    <strong>ID:</strong> {camera.id} 
+                    <strong>User ID:</strong> {camera.user_id} 
+                    <strong>Type:</strong> {camera.camera_type}
+                </div>
+                """
+        else:
+            html += "<p>No cameras in database</p>"
+        
+        html += f"""
+            </div>
+            
+            <div class="info">
+                <h2>Actions:</h2>
+                <a href="/dashboard" class="btn">📊 Dashboard</a>
+                <a href="/add_camera" class="btn">➕ Add Camera</a>
+                <a href="/health" class="btn">🏥 Health</a>
+                <a href="/logout" class="btn">🚪 Logout</a>
+            </div>
+            
+        </body>
+        </html>
+        """
+        
+        return html
+        
+    except Exception as e:
+        return f"""
+        <h1>Debug Error</h1>
+        <p>Error: {e}</p>
+        <p><a href="/dashboard">Back to Dashboard</a></p>
+        """
+
+#...........................................................................................................................................................................................................................................
+
 @app.route('/delete_camera/<int:camera_id>')
 @login_required
 def delete_camera(camera_id):
