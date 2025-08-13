@@ -218,34 +218,56 @@ def logout():
     flash('Logged out successfully.', 'info')
     return redirect(url_for('home'))
 
+# Replace your dashboard route in app.py with this improved version
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
     try:
+        # Get cameras for current user with explicit query
         cameras = Camera.query.filter_by(user_id=current_user.id).all()
+        
+        # Log debug information
+        logger.info(f"Dashboard accessed by user {current_user.id} ({current_user.email})")
+        logger.info(f"Found {len(cameras)} cameras for user {current_user.id}")
+        
+        # Debug: Print camera details
+        for camera in cameras:
+            logger.info(f"Camera: {camera.name} (ID: {camera.id}, Type: {camera.camera_type})")
+        
         return render_template('dashboard.html', cameras=cameras, user=current_user)
+        
     except Exception as e:
-        logger.error(f"Dashboard error: {e}")
-        flash('Error loading dashboard.', 'danger')
+        logger.error(f"Dashboard error for user {current_user.id}: {e}")
+        flash(f'Error loading dashboard: {str(e)}', 'danger')
+        
+        # Return dashboard with empty cameras list as fallback
         return render_template('dashboard.html', cameras=[], user=current_user)
 
 @app.route('/add_camera', methods=['GET', 'POST'])
 @login_required
 def add_camera():
     try:
-        if len(current_user.cameras) >= current_user.camera_limit:
+        # Check camera limit
+        current_camera_count = len(current_user.cameras)
+        logger.info(f"User {current_user.id} has {current_camera_count} cameras, limit is {current_user.camera_limit}")
+        
+        if current_camera_count >= current_user.camera_limit:
             flash(f'Camera limit reached ({current_user.camera_limit}). Upgrade your plan.', 'warning')
             return redirect(url_for('pricing'))
         
         if request.method == 'POST':
             name = request.form.get('name', '').strip()
             camera_type = request.form.get('type', 'device')
-            camera_url = request.form.get('camera_url') if camera_type == 'ip' else None
+            camera_url = request.form.get('camera_url', '').strip() if camera_type == 'ip' else None
+            
+            logger.info(f"Adding camera: name='{name}', type='{camera_type}', url='{camera_url}', user_id={current_user.id}")
             
             if not name:
                 flash('Camera name is required.', 'danger')
                 return render_template('add_camera.html')
             
+            # Create camera
             camera = Camera(
                 name=name,
                 camera_type=camera_type,
@@ -253,19 +275,113 @@ def add_camera():
                 user_id=current_user.id
             )
             
+            # Add to database
             db.session.add(camera)
             db.session.commit()
             
-            logger.info(f"Camera added: {name} by user {current_user.email}")
-            flash('Camera added successfully!', 'success')
+            # Verify it was added
+            added_camera = Camera.query.filter_by(name=name, user_id=current_user.id).first()
+            if added_camera:
+                logger.info(f"✅ Camera successfully added: ID={added_camera.id}, Name='{added_camera.name}'")
+                flash(f'Camera "{name}" added successfully!', 'success')
+            else:
+                logger.error(f"❌ Camera was not found after adding: {name}")
+                flash('Camera may not have been saved properly. Please check your cameras.', 'warning')
+            
             return redirect(url_for('dashboard'))
             
     except Exception as e:
-        logger.error(f"Add camera error: {e}")
+        logger.error(f"Add camera error for user {current_user.id}: {e}")
         db.session.rollback()
-        flash('Error adding camera. Please try again.', 'danger')
+        flash(f'Error adding camera: {str(e)}', 'danger')
     
     return render_template('add_camera.html')
+
+
+# Add this debug route to your app.py to see what's happening...................................................................................
+
+@app.route('/debug-cameras')
+@login_required
+def debug_cameras():
+    """Debug route to see what cameras exist"""
+    try:
+        # Get all cameras for current user
+        user_cameras = Camera.query.filter_by(user_id=current_user.id).all()
+        
+        # Get all cameras in database
+        all_cameras = Camera.query.all()
+        
+        # Get current user info
+        user_info = {
+            'id': current_user.id,
+            'username': current_user.username,
+            'email': current_user.email,
+            'camera_limit': current_user.camera_limit
+        }
+        
+        debug_info = f"""
+        <h1>🔍 Camera Debug Information</h1>
+        
+        <h2>Current User:</h2>
+        <ul>
+            <li>ID: {user_info['id']}</li>
+            <li>Username: {user_info['username']}</li>
+            <li>Email: {user_info['email']}</li>
+            <li>Camera Limit: {user_info['camera_limit']}</li>
+        </ul>
+        
+        <h2>Your Cameras ({len(user_cameras)}):</h2>
+        """
+        
+        if user_cameras:
+            debug_info += "<ul>"
+            for camera in user_cameras:
+                debug_info += f"""
+                <li>
+                    <strong>{camera.name}</strong> 
+                    (ID: {camera.id}, Type: {camera.camera_type}, 
+                    User ID: {camera.user_id}, Created: {camera.created_at})
+                </li>
+                """
+            debug_info += "</ul>"
+        else:
+            debug_info += "<p><em>No cameras found for your user ID</em></p>"
+        
+        debug_info += f"""
+        <h2>All Cameras in Database ({len(all_cameras)}):</h2>
+        """
+        
+        if all_cameras:
+            debug_info += "<ul>"
+            for camera in all_cameras:
+                debug_info += f"""
+                <li>
+                    <strong>{camera.name}</strong> 
+                    (ID: {camera.id}, Type: {camera.camera_type}, 
+                    User ID: {camera.user_id}, Owner: {camera.owner.username if camera.owner else 'None'})
+                </li>
+                """
+            debug_info += "</ul>"
+        else:
+            debug_info += "<p><em>No cameras found in database</em></p>"
+            
+        debug_info += """
+        <h2>Quick Actions:</h2>
+        <p>
+            <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
+            <a href="/add_camera" class="btn btn-success">Add Camera</a>
+            <a href="/health" class="btn btn-info">Health Check</a>
+        </p>
+        """
+        
+        return debug_info
+        
+    except Exception as e:
+        return f"""
+        <h1>❌ Debug Error</h1>
+        <p><strong>Error:</strong> {e}</p>
+        <p><a href="/dashboard">Back to Dashboard</a></p>
+        """
 
 @app.route('/delete_camera/<int:camera_id>')
 @login_required
