@@ -470,13 +470,9 @@ def push_frame(camera_id):
     file = request.files.get('frame')
     if not file:
         return "No frame provided", 400
-    file_bytes = file.read()
-    np_arr = np.frombuffer(file_bytes, np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-
-    # Optionally annotate before broadcasting
-    jpeg_out = camera_service.annotate_frame(frame)
-    live_hub.publish(camera_id, jpeg_out)
+    # Broadcast raw JPEG to minimize CPU/memory; annotation remains optional via /analyze
+    jpeg_bytes = file.read()
+    live_hub.publish(camera_id, jpeg_bytes)
     return "OK", 200
 
 # Watcher: returns MJPEG stream of the latest pushed frames
@@ -506,7 +502,7 @@ def watch_stream(camera_id):
             else:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(1 / 15.0)
+            time.sleep(0.1)  # ~10 FPS
 
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 

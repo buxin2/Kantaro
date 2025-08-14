@@ -84,9 +84,19 @@ class CameraService:
         return buf.tobytes()
     
     def _ensure_model(self):
-        if self.model is None:
-            # Load a small YOLO model on first use (CPU)
-            self.model = YOLO("yolov8n.pt")
+        if self.model is not None:
+            return
+        # Allow disabling detection via env var to reduce memory usage
+        enable_detection = os.environ.get('ENABLE_DETECTION', '0').lower() in ('1', 'true', 'yes')
+        if not enable_detection:
+            self.model = None
+            return
+        try:
+            # Import here so torch is only loaded if enabled
+            from ultralytics import YOLO as _YOLO  # type: ignore
+            self.model = _YOLO("yolov8n.pt")
+        except Exception:
+            self.model = None
 
     def process_frame(self, frame):
         """Process frame with YOLO detection"""
