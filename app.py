@@ -2,10 +2,15 @@
 import os
 import logging
 from datetime import datetime, timedelta
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, render_template, request, redirect, url_for, flash, Response
+import cv2
+import numpy as np
+import threading
+import time
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from services.camera_service import CameraService
 
 # Configure logging
 logging.basicConfig(
@@ -40,10 +45,16 @@ if database_url:
         }
     }
 else:
-    # Fallback for local development
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///security_app.db'
-    logger.warning("⚠️ DATABASE_URL not found! Using SQLite")
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {}
+    # Fallback for local development - use absolute SQLite path to avoid cwd issues
+    basedir = os.path.abspath(os.path.dirname(__file__))
+    sqlite_path = os.path.join(basedir, 'security_app.db')
+    app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{sqlite_path}'
+    logger.warning("⚠️ DATABASE_URL not found! Using SQLite at %s", sqlite_path)
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'connect_args': {
+            'check_same_thread': False
+        }
+    }
 
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -53,6 +64,75 @@ bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 login_manager.login_message_category = 'info'
+
+# Initialize services
+camera_service = CameraService()
+
+# In-memory live stream hub: one publisher, many watchers per camera_id
+class LiveStreamHub:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._streams = {}  # camera_id -> { 'frame': bytes|None, 'cond': threading.Condition, 'updated_at': float }
+
+    def _get_entry(self, camera_id: int):
+        if camera_id not in self._streams:
+            # Condition uses the same lock for wait/notify
+            self._streams[camera_id] = {
+                'frame': None,
+                'cond': threading.Condition(self._lock),
+                'updated_at': 0.0,
+            }
+        return self._streams[camera_id]
+
+    def publish(self, camera_id: int, jpeg_bytes: bytes):
+        with self._lock:
+            entry = self._get_entry(camera_id)
+            entry['frame'] = jpeg_bytes
+            entry['updated_at'] = time.time()
+            entry['cond'].notify_all()
+
+    def wait_for_frame(self, camera_id: int, timeout: float = 5.0) -> bytes | None:
+        with self._lock:
+            entry = self._get_entry(camera_id)
+            # If we already have a frame, return it immediately
+            if entry['frame'] is not None:
+                return entry['frame']
+            # Otherwise wait for a new one
+            entry['cond'].wait(timeout=timeout)
+            return entry['frame']
+
+    def get_latest(self, camera_id: int) -> bytes | None:
+        with self._lock:
+            entry = self._get_entry(camera_id)
+            return entry['frame']
+
+live_hub = LiveStreamHub()
+
+# Admin configuration
+ADMIN_EMAILS = set(
+    e.strip().lower()
+    for e in os.environ.get('ADMIN_EMAILS', 'admin@example.com').split(',')
+    if e.strip()
+)
+
+def is_current_user_admin() -> bool:
+    try:
+        return bool(current_user.is_authenticated and current_user.email.lower() in ADMIN_EMAILS)
+    except Exception:
+        return False
+
+@app.context_processor
+def inject_admin_flag():
+    return { 'is_admin': is_current_user_admin() }
+
+def admin_required(view_func):
+    def wrapper(*args, **kwargs):
+        if not current_user.is_authenticated or not is_current_user_admin():
+            flash('Admin access required.', 'danger')
+            return redirect(url_for('dashboard'))
+        return view_func(*args, **kwargs)
+    wrapper.__name__ = view_func.__name__
+    return wrapper
 
 # Database Models (defined in app.py to avoid circular imports)
 class User(UserMixin, db.Model):
@@ -72,14 +152,17 @@ class User(UserMixin, db.Model):
     
     @property
     def is_subscription_active(self):
-        if self.subscription_plan == 'free':
-            return True
-        return self.subscription_end and self.subscription_end > datetime.utcnow()
+        # Subscriptions disabled: always active
+        return True
     
     @property
     def camera_limit(self):
-        limits = {'free': 1, 'basic': 1, 'pro': 4, 'business': 10}
-        return limits.get(self.subscription_plan, 1)
+        # Subscriptions disabled: effectively unlimited
+        return 1_000_000
+
+    # Convenience for decorators that might call can_add_camera
+    def can_add_camera(self) -> bool:
+        return len(self.cameras) < self.camera_limit
 
 class Camera(db.Model):
     __tablename__ = 'cameras'
@@ -224,6 +307,9 @@ def logout():
 @login_required
 def dashboard():
     try:
+        # Ensure session state is fresh before querying
+        db.session.expire_all()
+
         # Get cameras for current user with explicit query
         cameras = Camera.query.filter_by(user_id=current_user.id).all()
         
@@ -248,14 +334,6 @@ def dashboard():
 @login_required
 def add_camera():
     try:
-        # Check camera limit
-        current_camera_count = len(current_user.cameras)
-        logger.info(f"User {current_user.id} has {current_camera_count} cameras, limit is {current_user.camera_limit}")
-        
-        if current_camera_count >= current_user.camera_limit:
-            flash(f'Camera limit reached ({current_user.camera_limit}). Upgrade your plan.', 'warning')
-            return redirect(url_for('pricing'))
-        
         if request.method == 'POST':
             name = request.form.get('name', '').strip()
             camera_type = request.form.get('type', 'device')
@@ -298,193 +376,6 @@ def add_camera():
     return render_template('add_camera.html')
 
 
-# Add this debug route to your app.py to see what's happening...................................................................................
-
-@app.route('/debug-cameras')
-@login_required
-def debug_cameras():
-    """Debug route to see what cameras exist"""
-    try:
-        # Get all cameras for current user
-        user_cameras = Camera.query.filter_by(user_id=current_user.id).all()
-        
-        # Get all cameras in database
-        all_cameras = Camera.query.all()
-        
-        # Get current user info
-        user_info = {
-            'id': current_user.id,
-            'username': current_user.username,
-            'email': current_user.email,
-            'camera_limit': current_user.camera_limit
-        }
-        
-        debug_info = f"""
-        <h1>🔍 Camera Debug Information</h1>
-        
-        <h2>Current User:</h2>
-        <ul>
-            <li>ID: {user_info['id']}</li>
-            <li>Username: {user_info['username']}</li>
-            <li>Email: {user_info['email']}</li>
-            <li>Camera Limit: {user_info['camera_limit']}</li>
-        </ul>
-        
-        <h2>Your Cameras ({len(user_cameras)}):</h2>
-        """
-        
-        if user_cameras:
-            debug_info += "<ul>"
-            for camera in user_cameras:
-                debug_info += f"""
-                <li>
-                    <strong>{camera.name}</strong> 
-                    (ID: {camera.id}, Type: {camera.camera_type}, 
-                    User ID: {camera.user_id}, Created: {camera.created_at})
-                </li>
-                """
-            debug_info += "</ul>"
-        else:
-            debug_info += "<p><em>No cameras found for your user ID</em></p>"
-        
-        debug_info += f"""
-        <h2>All Cameras in Database ({len(all_cameras)}):</h2>
-        """
-        
-        if all_cameras:
-            debug_info += "<ul>"
-            for camera in all_cameras:
-                debug_info += f"""
-                <li>
-                    <strong>{camera.name}</strong> 
-                    (ID: {camera.id}, Type: {camera.camera_type}, 
-                    User ID: {camera.user_id}, Owner: {camera.owner.username if camera.owner else 'None'})
-                </li>
-                """
-            debug_info += "</ul>"
-        else:
-            debug_info += "<p><em>No cameras found in database</em></p>"
-            
-        debug_info += """
-        <h2>Quick Actions:</h2>
-        <p>
-            <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
-            <a href="/add_camera" class="btn btn-success">Add Camera</a>
-            <a href="/health" class="btn btn-info">Health Check</a>
-        </p>
-        """
-        
-        return debug_info
-        
-    except Exception as e:
-        return f"""
-        <h1>❌ Debug Error</h1>
-        <p><strong>Error:</strong> {e}</p>
-        <p><a href="/dashboard">Back to Dashboard</a></p>
-        """
-
-
-@app.route('/debug-cameras')
-@login_required
-def debug_cameras():
-    """Simple debug route to see what's happening"""
-    try:
-        # Get cameras for current user
-        user_cameras = Camera.query.filter_by(user_id=current_user.id).all()
-        
-        # Get all cameras
-        all_cameras = Camera.query.all()
-        
-        # Create simple HTML response
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Camera Debug</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                .info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 10px 0; }}
-                .camera {{ background: #e9ecef; padding: 10px; margin: 5px 0; border-radius: 3px; }}
-                .btn {{ padding: 8px 16px; margin: 5px; background: #007bff; color: white; text-decoration: none; border-radius: 4px; }}
-            </style>
-        </head>
-        <body>
-            <h1>🔍 Camera Debug Information</h1>
-            
-            <div class="info">
-                <h2>Current User:</h2>
-                <p>ID: {current_user.id}</p>
-                <p>Email: {current_user.email}</p>
-                <p>Username: {current_user.username}</p>
-                <p>Camera Limit: {current_user.camera_limit}</p>
-                <p>Subscription: {current_user.subscription_plan}</p>
-            </div>
-            
-            <div class="info">
-                <h2>Your Cameras ({len(user_cameras)}):</h2>
-        """
-        
-        if user_cameras:
-            for camera in user_cameras:
-                html += f"""
-                <div class="camera">
-                    <strong>Name:</strong> {camera.name}<br>
-                    <strong>ID:</strong> {camera.id}<br>
-                    <strong>Type:</strong> {camera.camera_type}<br>
-                    <strong>User ID:</strong> {camera.user_id}<br>
-                    <strong>Created:</strong> {camera.created_at}<br>
-                    <strong>URL:</strong> {camera.camera_url or 'None'}
-                </div>
-                """
-        else:
-            html += "<p style='color: red;'>❌ No cameras found for your user ID!</p>"
-        
-        html += f"""
-            </div>
-            
-            <div class="info">
-                <h2>All Cameras in Database ({len(all_cameras)}):</h2>
-        """
-        
-        if all_cameras:
-            for camera in all_cameras:
-                html += f"""
-                <div class="camera">
-                    <strong>Name:</strong> {camera.name} 
-                    <strong>ID:</strong> {camera.id} 
-                    <strong>User ID:</strong> {camera.user_id} 
-                    <strong>Type:</strong> {camera.camera_type}
-                </div>
-                """
-        else:
-            html += "<p>No cameras in database</p>"
-        
-        html += f"""
-            </div>
-            
-            <div class="info">
-                <h2>Actions:</h2>
-                <a href="/dashboard" class="btn">📊 Dashboard</a>
-                <a href="/add_camera" class="btn">➕ Add Camera</a>
-                <a href="/health" class="btn">🏥 Health</a>
-                <a href="/logout" class="btn">🚪 Logout</a>
-            </div>
-            
-        </body>
-        </html>
-        """
-        
-        return html
-        
-    except Exception as e:
-        return f"""
-        <h1>Debug Error</h1>
-        <p>Error: {e}</p>
-        <p><a href="/dashboard">Back to Dashboard</a></p>
-        """
-
-#...........................................................................................................................................................................................................................................
-
 @app.route('/delete_camera/<int:camera_id>')
 @login_required
 def delete_camera(camera_id):
@@ -504,6 +395,26 @@ def delete_camera(camera_id):
     
     return redirect(url_for('dashboard'))
 
+@app.route('/debug-cameras')
+@login_required
+def debug_cameras():
+    try:
+        db.session.expire_all()
+        cameras = Camera.query.filter_by(user_id=current_user.id).all()
+        lines = [
+            f"User: {current_user.id} ({current_user.email})",
+            f"Camera count: {len(cameras)}",
+            "",
+        ]
+        for cam in cameras:
+            lines.append(
+                f"- ID={cam.id} | Name='{cam.name}' | Type={cam.camera_type} | URL={cam.camera_url or '-'} | Created={cam.created_at}"
+            )
+        return "<pre>" + "\n".join(lines) + "</pre>", 200
+    except Exception as e:
+        logger.error(f"Debug cameras error: {e}")
+        return f"<pre>Error: {e}</pre>", 500
+
 @app.route('/pricing')
 def pricing():
     return render_template('pricing.html')
@@ -512,6 +423,151 @@ def pricing():
 @login_required
 def account():
     return render_template('account.html', user=current_user)
+
+# Compatibility aliases for any old links using /camera/* paths
+@app.route('/camera/dashboard')
+@login_required
+def camera_dashboard_alias():
+    return redirect(url_for('dashboard'))
+
+@app.route('/camera/add', methods=['GET', 'POST'])
+@login_required
+def camera_add_alias():
+    return redirect(url_for('add_camera'))
+
+@app.route('/camera/delete/<int:camera_id>')
+@login_required
+def camera_delete_alias(camera_id):
+    return redirect(url_for('delete_camera', camera_id=camera_id))
+
+@app.route('/stream/<int:camera_id>')
+@login_required
+def stream(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera or (camera.owner != current_user and not is_current_user_admin()):
+        flash('Access denied.', 'danger')
+        return redirect(url_for('dashboard'))
+    return render_template('stream.html', camera=camera)
+
+@app.route('/video/<int:camera_id>')
+@login_required
+def video(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera or (camera.owner != current_user and not is_current_user_admin()):
+        return "Access denied", 403
+    return Response(
+        camera_service.generate_frames(camera),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+# Publisher: device client posts frames here to broadcast to watchers
+@app.route('/push/<int:camera_id>', methods=['POST'])
+@login_required
+def push_frame(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera or (camera.owner != current_user and not is_current_user_admin()):
+        return "Access denied", 403
+    file = request.files.get('frame')
+    if not file:
+        return "No frame provided", 400
+    file_bytes = file.read()
+    np_arr = np.frombuffer(file_bytes, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+    # Optionally annotate before broadcasting
+    jpeg_out = camera_service.annotate_frame(frame)
+    live_hub.publish(camera_id, jpeg_out)
+    return "OK", 200
+
+# Watcher: returns MJPEG stream of the latest pushed frames
+@app.route('/watch/<int:camera_id>')
+@login_required
+def watch_stream(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera or (camera.owner != current_user and not is_current_user_admin()):
+        return "Access denied", 403
+
+    def generate():
+        # Send a placeholder if no publisher yet
+        latest = live_hub.get_latest(camera_id)
+        if latest is None:
+            placeholder = camera_service._make_text_frame([
+                'Waiting for live broadcast...',
+                'Open this camera on the streaming computer and click Start Broadcast.'
+            ])
+            yield placeholder
+
+        while True:
+            frame = live_hub.wait_for_frame(camera_id, timeout=5.0)
+            if frame is None:
+                # Keep-alive placeholder
+                placeholder = camera_service._make_text_frame(['No live frame yet...'])
+                yield placeholder
+            else:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+            time.sleep(1 / 15.0)
+
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/analyze/<int:camera_id>', methods=['POST'])
+@login_required
+def analyze_frame(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera or (camera.owner != current_user and not is_current_user_admin()):
+        return "Access denied", 403
+    file = request.files.get('frame')
+    if not file:
+        return "No frame provided", 400
+    file_bytes = file.read()
+    np_arr = np.frombuffer(file_bytes, np.uint8)
+    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    jpeg_out = camera_service.annotate_frame(frame)
+    return Response(jpeg_out, mimetype='image/jpeg')
+
+# Aliases for old camera stream paths
+@app.route('/camera/stream/<int:camera_id>')
+@login_required
+def camera_stream_alias(camera_id):
+    return redirect(url_for('stream', camera_id=camera_id))
+
+@app.route('/camera/video/<int:camera_id>')
+@login_required
+def camera_video_alias(camera_id):
+    return redirect(url_for('video', camera_id=camera_id))
+
+@app.route('/admin')
+@login_required
+@admin_required
+def admin_dashboard():
+    try:
+        # Metrics
+        total_users = User.query.count()
+        total_cameras = Camera.query.count()
+        plans = {'free': 0, 'basic': 0, 'pro': 0, 'business': 0}
+        for plan, count in db.session.query(User.subscription_plan, db.func.count(User.id)).group_by(User.subscription_plan):
+            plans[plan] = count
+
+        # Detailed lists
+        users = User.query.order_by(User.id.desc()).all()
+        cameras = Camera.query.order_by(Camera.created_at.desc()).all()
+
+        # Environment
+        database_type = 'postgresql' if os.environ.get('DATABASE_URL') else 'sqlite'
+
+        return render_template(
+            'admin.html',
+            users=users,
+            cameras=cameras,
+            total_users=total_users,
+            total_cameras=total_cameras,
+            plans=plans,
+            database_type=database_type,
+        )
+    except Exception as e:
+        logger.error(f"Admin dashboard error: {e}")
+        flash('Failed to load admin dashboard.', 'danger')
+        return redirect(url_for('dashboard'))
 
 # Utility routes
 @app.route('/health')
