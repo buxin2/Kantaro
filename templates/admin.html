@@ -102,4 +102,34 @@
     <a href="/debug-cameras" class="btn btn-outline-secondary btn-sm">Debug Cameras</a>
   </div>
   </div>
+ 
+<div class="row mt-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">Recent Detections</div>
+      <div class="card-body p-0">
+        <table class="table mb-0">
+          <thead>
+            <tr>
+              <th>ID</th><th>Camera</th><th>User</th><th>Label</th><th>Time</th><th>Snapshot</th><th>Video</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in detections %}
+            <tr>
+              <td>{{ d.id }}</td>
+              <td>{{ d.camera_id }}</td>
+              <td>{{ d.user_id }}</td>
+              <td>{{ d.label }}</td>
+              <td>{{ d.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+              <td><a href="{{ d.snapshot_url }}" target="_blank">Image</a></td>
+              <td><a href="{{ d.video_url }}" target="_blank">Video</a></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+ </div>
 {% endblock %}

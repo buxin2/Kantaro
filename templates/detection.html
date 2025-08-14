@@ -1,0 +1,35 @@
+<!-- templates/detection.html -->
+{% extends "base.html" %}
+
+{% block title %}Detection {{ detection.id }}{% endblock %}
+
+{% block content %}
+<div class="row">
+	<div class="col-md-8">
+		<div class="card mb-3">
+			<div class="card-header">Video</div>
+			<div class="card-body">
+				<video controls style="width:100%; max-height:70vh;" src="{{ detection.video_url }}"></video>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-4">
+		<div class="card mb-3">
+			<div class="card-header">Snapshot</div>
+			<div class="card-body text-center">
+				<img src="{{ detection.snapshot_url }}" class="img-fluid" />
+			</div>
+		</div>
+		<div class="card">
+			<div class="card-body">
+				<p class="mb-1"><strong>ID:</strong> {{ detection.id }}</p>
+				<p class="mb-1"><strong>Camera:</strong> {{ detection.camera_id }}</p>
+				<p class="mb-1"><strong>Label:</strong> {{ detection.label }}</p>
+				<p class="mb-1"><strong>Time:</strong> {{ detection.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+				<a href="{{ detection.video_url }}" target="_blank" class="btn btn-outline-primary btn-sm mt-2">Open Video</a>
+				<a href="{{ detection.snapshot_url }}" target="_blank" class="btn btn-outline-secondary btn-sm mt-2">Open Image</a>
+			</div>
+		</div>
+	</div>
+</div>
+{% endblock %}

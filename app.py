@@ -7,6 +7,12 @@ import cv2
 import numpy as np
 import threading
 import time
+import cloudinary
+import cloudinary.uploader
+import tempfile
+from collections import deque
+import smtplib
+from email.message import EmailMessage
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
@@ -72,15 +78,15 @@ camera_service = CameraService()
 class LiveStreamHub:
     def __init__(self):
         self._lock = threading.Lock()
-        self._streams = {}  # camera_id -> { 'frame': bytes|None, 'cond': threading.Condition, 'updated_at': float }
+        # camera_id -> { 'frame': bytes|None, 'cond': threading.Condition, 'version': int }
+        self._streams = {}
 
     def _get_entry(self, camera_id: int):
         if camera_id not in self._streams:
-            # Condition uses the same lock for wait/notify
             self._streams[camera_id] = {
                 'frame': None,
                 'cond': threading.Condition(self._lock),
-                'updated_at': 0.0,
+                'version': 0,
             }
         return self._streams[camera_id]
 
@@ -88,25 +94,151 @@ class LiveStreamHub:
         with self._lock:
             entry = self._get_entry(camera_id)
             entry['frame'] = jpeg_bytes
-            entry['updated_at'] = time.time()
+            entry['version'] += 1
             entry['cond'].notify_all()
 
-    def wait_for_frame(self, camera_id: int, timeout: float = 5.0) -> bytes | None:
+    def wait_for_next(self, camera_id: int, last_version: int, timeout: float = 10.0):
         with self._lock:
             entry = self._get_entry(camera_id)
-            # If we already have a frame, return it immediately
-            if entry['frame'] is not None:
-                return entry['frame']
-            # Otherwise wait for a new one
+            if entry['version'] != last_version and entry['frame'] is not None:
+                return entry['frame'], entry['version']
             entry['cond'].wait(timeout=timeout)
-            return entry['frame']
+            return entry['frame'], entry['version']
 
-    def get_latest(self, camera_id: int) -> bytes | None:
+    def get_latest(self, camera_id: int):
         with self._lock:
             entry = self._get_entry(camera_id)
-            return entry['frame']
+            return entry['frame'], entry['version']
 
 live_hub = LiveStreamHub()
+
+# Monitoring threads per camera_id
+monitor_threads = {}
+monitor_flags = {}
+
+def send_email_notification(subject: str, to_emails: list[str], html_body: str, text_body: str | None = None) -> None:
+    host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    port = int(os.environ.get('SMTP_PORT', '587'))
+    username = os.environ.get('SMTP_USERNAME')
+    password = os.environ.get('SMTP_PASSWORD')
+    use_tls = os.environ.get('SMTP_USE_TLS', '1').lower() in ('1', 'true', 'yes')
+    if not (username and password):
+        logger.warning('Email not sent: SMTP credentials not set')
+        return
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = username
+    msg['To'] = ', '.join(to_emails)
+    if text_body is None:
+        text_body = 'See HTML version.'
+    msg.set_content(text_body)
+    msg.add_alternative(html_body, subtype='html')
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as server:
+            if use_tls:
+                server.starttls()
+            server.login(username, password)
+            server.send_message(msg)
+        logger.info('Notification email sent to %s', to_emails)
+    except Exception as e:
+        logger.error('Failed to send email: %s', e)
+
+def monitor_camera_detections(camera_id: int, user_id: int, clip_seconds: int = 15):
+    """Continuously watch pushed frames and record a short clip when detection occurs."""
+    # Ensure app context for DB operations inside thread
+    app_ctx = app.app_context()
+    app_ctx.push()
+    # Rolling buffer of last N seconds worth of frames
+    target_fps = 10
+    max_frames = clip_seconds * target_fps
+    buffer = deque(maxlen=max_frames)
+    last_version = 0
+
+    while monitor_flags.get(camera_id):
+        frame_bytes, version = live_hub.wait_for_next(camera_id, last_version, timeout=5.0)
+        if version == last_version:
+            continue
+        last_version = version
+        timestamp = time.time()
+        buffer.append((timestamp, frame_bytes))
+
+        # Run lightweight detection sampling (every N frames)
+        if len(buffer) % (target_fps // 2 or 1) == 0:
+            # Decode a frame to run detection
+            np_arr = np.frombuffer(frame_bytes, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            # Use annotate_frame to both detect and draw; if detection disabled, it will overlay a note
+            annotated = camera_service.annotate_frame(frame)
+            # Heuristic: if annotated differs in size from original, assume detection occurred
+            detected = len(annotated) != len(frame_bytes)
+            if detected:
+                try:
+                    # Create snapshot from current annotated bytes
+                    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as img_tmp:
+                        img_tmp.write(annotated)
+                        img_path = img_tmp.name
+                    img_up = cloudinary.uploader.upload(img_path, folder=f"detections/{user_id}/{camera_id}")
+                    snapshot_url = img_up.get('secure_url')
+
+                    # Write buffered frames to a temporary video file
+                    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as vid_tmp:
+                        video_path = vid_tmp.name
+                    # Assemble video using OpenCV VideoWriter
+                    frames = []
+                    for _, fb in buffer:
+                        arr = np.frombuffer(fb, np.uint8)
+                        f = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        frames.append(f)
+                    if frames:
+                        h, w = frames[0].shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        out = cv2.VideoWriter(video_path, fourcc, target_fps, (w, h))
+                        for f in frames:
+                            out.write(f)
+                        out.release()
+
+                    vid_up = cloudinary.uploader.upload_large(video_path, resource_type='video', folder=f"detections/{user_id}/{camera_id}")
+                    video_url = vid_up.get('secure_url')
+
+                    # Persist detection record
+                    det = Detection(camera_id=camera_id, user_id=user_id, label='object', snapshot_url=snapshot_url, video_url=video_url)
+                    db.session.add(det)
+                    db.session.commit()
+
+                    # Notify user/admin via email if configured
+                    try:
+                        # Build detection link on our site
+                        base_url = os.environ.get('SITE_URL', '').rstrip('/')
+                        if base_url:
+                            detection_link = f"{base_url}/detection/{det.id}"
+                        else:
+                            detection_link = det.video_url
+                        user = db.session.get(User, user_id)
+                        recipients = []
+                        if user and user.email:
+                            recipients.append(user.email)
+                        # Include admins
+                        recipients.extend(list(ADMIN_EMAILS))
+                        recipients = list(dict.fromkeys(recipients))  # dedupe
+                        if recipients:
+                            subject = f"Object detected on Camera {camera_id}"
+                            html = f"""
+                                <h3>Object detected</h3>
+                                <p>Camera ID: {camera_id}</p>
+                                <p><strong>Snapshot:</strong><br><img src='{snapshot_url}' style='max-width:100%'/></p>
+                                <p><a href='{detection_link}'>View full video</a></p>
+                            """
+                            text = f"Object detected on camera {camera_id}. View: {detection_link}"
+                            send_email_notification(subject, recipients, html, text)
+                    except Exception as ne:
+                        logger.error('Notification error: %s', ne)
+
+                    # Reset buffer after detection to avoid duplicate uploads
+                    buffer.clear()
+                except Exception as e:
+                    logger.error(f"Detection upload failed: {e}")
+    # Pop app context on exit
+    app_ctx.pop()
 
 # Admin configuration
 ADMIN_EMAILS = set(
@@ -177,6 +309,16 @@ class Camera(db.Model):
     def __repr__(self):
         return f"Camera('{self.name}', '{self.camera_type}', user_id={self.user_id})"
 
+class Detection(db.Model):
+    __tablename__ = 'detections'
+    id = db.Column(db.Integer, primary_key=True)
+    camera_id = db.Column(db.Integer, db.ForeignKey('cameras.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    label = db.Column(db.String(50), nullable=False)
+    snapshot_url = db.Column(db.String(500), nullable=False)
+    video_url = db.Column(db.String(500), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 # User loader for Flask-Login
 @login_manager.user_loader
 def load_user(user_id):
@@ -212,6 +354,14 @@ def init_database():
             
     except Exception as e:
         logger.error(f"❌ Database initialization error: {e}")
+
+# Cloudinary configuration from environment
+cloudinary.config(
+    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME', ''),
+    api_key=os.environ.get('CLOUDINARY_API_KEY', ''),
+    api_secret=os.environ.get('CLOUDINARY_API_SECRET', ''),
+    secure=True
+)
 
 # Routes
 @app.route('/')
@@ -484,27 +634,65 @@ def watch_stream(camera_id):
         return "Access denied", 403
 
     def generate():
-        # Send a placeholder if no publisher yet
-        latest = live_hub.get_latest(camera_id)
+        # Initial status/priming
+        latest, version = live_hub.get_latest(camera_id)
         if latest is None:
-            placeholder = camera_service._make_text_frame([
+            yield camera_service._make_text_frame([
                 'Waiting for live broadcast...',
                 'Open this camera on the streaming computer and click Start Broadcast.'
             ])
-            yield placeholder
+        else:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + latest + b'\r\n')
 
+        last_version = version
+        last_frame = latest
         while True:
-            frame = live_hub.wait_for_frame(camera_id, timeout=5.0)
+            frame, version = live_hub.wait_for_next(camera_id, last_version, timeout=10.0)
             if frame is None:
-                # Keep-alive placeholder
-                placeholder = camera_service._make_text_frame(['No live frame yet...'])
-                yield placeholder
-            else:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            time.sleep(0.1)  # ~10 FPS
+                # No new frame; repeat last frame as keep-alive
+                if last_frame is not None:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + last_frame + b'\r\n')
+                continue
+            last_version = version
+            last_frame = frame
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    headers = {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+    }
+    return Response(generate(), headers=headers, mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/monitor/start/<int:camera_id>')
+@login_required
+def start_monitor(camera_id):
+    camera = db.session.get(Camera, camera_id)
+    if not camera or (camera.owner != current_user and not is_current_user_admin()):
+        flash('Access denied.', 'danger')
+        return redirect(url_for('dashboard'))
+    if monitor_flags.get(camera_id):
+        flash('Monitoring already running.', 'info')
+        return redirect(url_for('stream', camera_id=camera_id))
+    monitor_flags[camera_id] = True
+    t = threading.Thread(target=monitor_camera_detections, args=(camera_id, camera.user_id), daemon=True)
+    monitor_threads[camera_id] = t
+    t.start()
+    flash('Monitoring started.', 'success')
+    return redirect(url_for('stream', camera_id=camera_id))
+
+@app.route('/monitor/stop/<int:camera_id>')
+@login_required
+def stop_monitor(camera_id):
+    if monitor_flags.get(camera_id):
+        monitor_flags[camera_id] = False
+        flash('Monitoring stopping...', 'info')
+    else:
+        flash('Monitoring not running.', 'info')
+    return redirect(url_for('stream', camera_id=camera_id))
 
 @app.route('/analyze/<int:camera_id>', methods=['POST'])
 @login_required
@@ -551,6 +739,7 @@ def admin_dashboard():
         # Environment
         database_type = 'postgresql' if os.environ.get('DATABASE_URL') else 'sqlite'
 
+        recent_detections = Detection.query.order_by(Detection.created_at.desc()).limit(50).all()
         return render_template(
             'admin.html',
             users=users,
@@ -559,6 +748,7 @@ def admin_dashboard():
             total_cameras=total_cameras,
             plans=plans,
             database_type=database_type,
+            detections=recent_detections,
         )
     except Exception as e:
         logger.error(f"Admin dashboard error: {e}")
@@ -566,6 +756,17 @@ def admin_dashboard():
         return redirect(url_for('dashboard'))
 
 # Utility routes
+@app.route('/detection/<int:det_id>')
+@login_required
+def view_detection(det_id):
+    det = db.session.get(Detection, det_id)
+    if not det:
+        return redirect(url_for('dashboard'))
+    # Allow owner or admin to view
+    if det.user_id != current_user.id and not is_current_user_admin():
+        flash('Access denied.', 'danger')
+        return redirect(url_for('dashboard'))
+    return render_template('detection.html', detection=det)
 @app.route('/health')
 def health_check():
     try:

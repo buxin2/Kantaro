@@ -20,6 +20,8 @@
                     <button id="toggle-detect" class="btn btn-primary btn-sm">Enable Detection</button>
                     <button id="start-broadcast" class="btn btn-success btn-sm">Start Broadcast</button>
                     <a href="{{ url_for('watch_stream', camera_id=camera.id) }}" target="_blank" class="btn btn-outline-secondary btn-sm">Open Watch Page</a>
+                    <a href="{{ url_for('start_monitor', camera_id=camera.id) }}" class="btn btn-warning btn-sm">Start Monitor</a>
+                    <a href="{{ url_for('stop_monitor', camera_id=camera.id) }}" class="btn btn-outline-warning btn-sm">Stop Monitor</a>
                 </div>
                 {% else %}
                 <img src="{{ url_for('video', camera_id=camera.id) }}" class="img-fluid" style="max-width: 100%; height: auto;">
@@ -116,7 +118,7 @@ async function pushFrame() {
   }
 }
 
-setInterval(pushFrame, 100); // ~10 FPS broadcast
+setInterval(pushFrame, 66); // ~15 FPS broadcast
 </script>
 {% endif %}
 {% endblock %}
