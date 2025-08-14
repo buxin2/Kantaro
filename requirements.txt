@@ -8,9 +8,11 @@ Flask-Login==0.6.3
 SQLAlchemy==2.0.21
 psycopg2-binary==2.9.7
 
-# Computer Vision (lightweight for Render)
+# Computer Vision (Render-friendly)
 opencv-python-headless==4.8.0.76
-ultralytics==8.0.200
+ultralytics==8.3.12
+torch==2.5.1
+cvzone==1.5.6
 
 # Image Processing
 Pillow==10.0.0

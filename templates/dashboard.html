@@ -6,34 +6,18 @@
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2>Your Cameras</h2>
-    {% if cameras|length < user.camera_limit %}
-        <a href="{{ url_for('add_camera') }}" class="btn btn-success">+ Add Camera</a>
-    {% else %}
-        <span class="text-muted">Camera limit reached ({{ user.camera_limit }})</span>
-    {% endif %}
+    <a href="{{ url_for('add_camera') }}" class="btn btn-success">+ Add Camera</a>
 </div>
 
 <div class="row mb-4">
-    <div class="col-md-12">
-        <div class="alert alert-info">
-            <strong>Plan:</strong> {{ user.subscription_plan.title() }} 
-            | <strong>Cameras:</strong> {{ cameras|length }}/{{ user.camera_limit }}
-            {% if user.subscription_end %}
-                | <strong>Expires:</strong> {{ user.subscription_end.strftime('%B %d, %Y') }}
-            {% endif %}
-            <a href="{{ url_for('pricing') }}" class="btn btn-sm btn-outline-primary ms-2">Upgrade</a>
-        </div>
-    </div>
+    <div class="col-md-12"></div>
 </div>
 
 <!-- Debug Information (temporary) -->
 <div class="row mb-4">
     <div class="col-md-12">
         <div class="alert alert-warning">
-            <strong>Debug Info:</strong> 
-            User ID: {{ user.id }} | 
-            Found {{ cameras|length }} cameras | 
-            Camera Limit: {{ user.camera_limit }}
+            <strong>Debug Info:</strong> User ID: {{ user.id }} | Found {{ cameras|length }} cameras
             <br>
             <a href="/debug-cameras" class="btn btn-sm btn-info">🔍 Debug Cameras</a>
         </div>
@@ -58,8 +42,7 @@
                     </small>
                 </p>
                 <div class="d-grid gap-2">
-                    <!-- Simplified buttons that don't depend on missing routes -->
-                    <button class="btn btn-primary" disabled>View Stream (Coming Soon)</button>
+                    <a href="{{ url_for('stream', camera_id=camera.id) }}" class="btn btn-primary">View Stream</a>
                     <a href="{{ url_for('delete_camera', camera_id=camera.id) }}" 
                        class="btn btn-danger btn-sm"
                        onclick="return confirm('Are you sure you want to delete this camera?')">Delete</a>
@@ -73,7 +56,7 @@
 <div class="text-center">
     <h4>No cameras configured</h4>
     <p class="text-muted">Add your first camera to get started with monitoring.</p>
-    <p><strong>Debug:</strong> User ID {{ user.id }} should have cameras, but none found.</p>
+    <p class="text-muted">Use the button above to add a camera.</p>
     <a href="{{ url_for('add_camera') }}" class="btn btn-primary">Add Your First Camera</a>
     <a href="/debug-cameras" class="btn btn-info">🔍 Debug</a>
 </div>

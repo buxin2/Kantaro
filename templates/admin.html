@@ -1,0 +1,105 @@
+<!-- templates/admin.html -->
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Admin Dashboard</h2>
+    <span class="badge bg-dark">DB: {{ database_type|upper }}</span>
+  </div>
+
+<div class="row mb-4">
+  <div class="col-md-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <div class="h2 mb-0">{{ total_users }}</div>
+        <div class="text-muted">Users</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card text-center">
+      <div class="card-body">
+        <div class="h2 mb-0">{{ total_cameras }}</div>
+        <div class="text-muted">Cameras</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card h-100">
+      <div class="card-header">Plans</div>
+      <div class="card-body">
+        <ul class="mb-0">
+          <li>Free: {{ plans.free }}</li>
+          <li>Basic: {{ plans.basic }}</li>
+          <li>Pro: {{ plans.pro }}</li>
+          <li>Business: {{ plans.business }}</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col-lg-6 mb-4">
+    <div class="card">
+      <div class="card-header">Recent Users</div>
+      <div class="card-body p-0">
+        <table class="table mb-0">
+          <thead>
+            <tr>
+              <th>ID</th><th>Username</th><th>Email</th><th>Plan</th><th>Cameras</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for u in users %}
+            <tr>
+              <td>{{ u.id }}</td>
+              <td>{{ u.username }}</td>
+              <td>{{ u.email }}</td>
+              <td><span class="badge bg-primary subscription-badge">{{ u.subscription_plan }}</span></td>
+              <td>{{ u.cameras|length }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6 mb-4">
+    <div class="card">
+      <div class="card-header">Recent Cameras</div>
+      <div class="card-body p-0">
+        <table class="table mb-0">
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Type</th><th>User</th><th>Added</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for c in cameras %}
+            <tr>
+              <td>{{ c.id }}</td>
+              <td>{{ c.name }}</td>
+              <td>{{ c.camera_type }}</td>
+              <td>{{ c.user_id }}</td>
+              <td>{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">Tools</div>
+  <div class="card-body">
+    <a href="/init-db" class="btn btn-outline-secondary btn-sm">Init DB</a>
+    <a href="/health" class="btn btn-outline-secondary btn-sm">Health</a>
+    <a href="/debug-cameras" class="btn btn-outline-secondary btn-sm">Debug Cameras</a>
+  </div>
+  </div>
+{% endblock %}

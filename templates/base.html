@@ -31,8 +31,10 @@
                         Welcome, {{ current_user.username }}! 
                         <span class="badge bg-primary subscription-badge">{{ current_user.subscription_plan }}</span>
                     </span>
+                    {% if is_admin %}
+                    <a class="nav-link" href="{{ url_for('admin_dashboard') }}">Admin</a>
+                    {% endif %}
                     <a class="nav-link" href="{{ url_for('dashboard') }}">Dashboard</a>
-                    <a class="nav-link" href="{{ url_for('pricing') }}">Pricing</a>
                     <a class="nav-link" href="{{ url_for('account') }}">Account</a>
                     <a class="nav-link" href="{{ url_for('logout') }}">Logout</a>
                 {% else %}
