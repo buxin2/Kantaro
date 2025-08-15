@@ -51,19 +51,28 @@ class CameraService:
         return (b'--frame\r\n'
                 b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
-    def annotate_frame(self, frame):
-        """Return a JPEG bytes image with YOLO detections drawn.
-        Falls back to raw frame with a notice if model is unavailable."""
+    def detect_and_annotate(self, frame):
+        """Run detection and return (jpeg_bytes, detected: bool).
+        If detection disabled/unavailable, returns (jpeg_bytes, False)."""
+        self._ensure_model()
+        detected_any = False
+        if self.model is None:
+            # Detection disabled
+            cv2.putText(frame, 'Detection disabled', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                        (0, 0, 255), 2, cv2.LINE_AA)
+            _, buf = cv2.imencode('.jpg', frame)
+            return buf.tobytes(), False
         try:
-            self._ensure_model()
             results = self.model(frame, stream=True)
         except Exception:
             cv2.putText(frame, 'Detection unavailable', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
                         (0, 0, 255), 2, cv2.LINE_AA)
             _, buf = cv2.imencode('.jpg', frame)
-            return buf.tobytes()
+            return buf.tobytes(), False
 
         for r in results:
+            if hasattr(r, 'boxes') and r.boxes is not None and len(r.boxes) > 0:
+                detected_any = True
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 w, h = x2 - x1, y2 - y1
@@ -81,7 +90,12 @@ class CameraService:
                 )
 
         _, buf = cv2.imencode('.jpg', frame)
-        return buf.tobytes()
+        return buf.tobytes(), detected_any
+
+    def annotate_frame(self, frame):
+        """Backward-compatible: return only JPEG bytes with overlays."""
+        jpeg_bytes, _ = self.detect_and_annotate(frame)
+        return jpeg_bytes
     
     def _ensure_model(self):
         if self.model is not None:

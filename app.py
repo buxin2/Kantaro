@@ -167,10 +167,8 @@ def monitor_camera_detections(camera_id: int, user_id: int, clip_seconds: int = 
             # Decode a frame to run detection
             np_arr = np.frombuffer(frame_bytes, np.uint8)
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            # Use annotate_frame to both detect and draw; if detection disabled, it will overlay a note
-            annotated = camera_service.annotate_frame(frame)
-            # Heuristic: if annotated differs in size from original, assume detection occurred
-            detected = len(annotated) != len(frame_bytes)
+            # Proper detection check
+            annotated, detected = camera_service.detect_and_annotate(frame)
             if detected:
                 try:
                     # Create snapshot from current annotated bytes
@@ -689,6 +687,13 @@ def start_monitor(camera_id):
 def stop_monitor(camera_id):
     if monitor_flags.get(camera_id):
         monitor_flags[camera_id] = False
+        # Wake any waiting monitor thread
+        try:
+            _ = live_hub.get_latest(camera_id)
+            # Publish a tiny keep-alive to trigger condition
+            live_hub.publish(camera_id, b'')
+        except Exception:
+            pass
         flash('Monitoring stopping...', 'info')
     else:
         flash('Monitoring not running.', 'info')
