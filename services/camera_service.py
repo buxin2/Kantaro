@@ -128,13 +128,17 @@ class CameraService:
             self.logger.error("Failed to load YOLO model: %s", e)
             self.model = None
 
-    def process_frame(self, frame):
-        """Process frame with YOLO detection"""
-        jpeg_bytes = self.annotate_frame(frame)
+    def process_frame(self, frame, enable_detection: bool = False):
+        """Encode frame as MJPEG chunk. If enable_detection, overlay detections first."""
+        if enable_detection:
+            jpeg_bytes = self.annotate_frame(frame)
+        else:
+            _, buffer = cv2.imencode('.jpg', frame)
+            jpeg_bytes = buffer.tobytes()
         return (b'--frame\r\n'
                 b'Content-Type: image/jpeg\r\n\r\n' + jpeg_bytes + b'\r\n')
     
-    def generate_frames(self, camera):
+    def generate_frames(self, camera, enable_detection: bool = False):
         """Generate video frames for streaming"""
         cap = self.get_camera_capture(camera)
         
@@ -167,7 +171,7 @@ class CameraService:
                         yield self._make_text_frame(['Stream ended or not readable.'])
                         break
                 
-                yield self.process_frame(frame)
+                yield self.process_frame(frame, enable_detection=enable_detection)
 
                 # throttle to ~15 FPS to reduce CPU usage
                 time.sleep(1 / 15.0)

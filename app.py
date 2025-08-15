@@ -603,8 +603,10 @@ def video(camera_id):
     camera = db.session.get(Camera, camera_id)
     if not camera or (camera.owner != current_user and not is_current_user_admin()):
         return "Access denied", 403
+    # Toggle detection overlay via query param (?detect=1)
+    enable_detection = request.args.get('detect') in ('1', 'true', 'yes')
     return Response(
-        camera_service.generate_frames(camera),
+        camera_service.generate_frames(camera, enable_detection=enable_detection),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
