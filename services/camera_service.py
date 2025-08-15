@@ -5,15 +5,20 @@
 import os
 import time
 import math
+import logging
 import cv2
 import cvzone
 import numpy as np
-from ultralytics import YOLO
 
 class CameraService:
     def __init__(self):
         # Lazy-load the YOLO model to avoid heavy startup and torch load issues
         self.model = None
+        self.logger = logging.getLogger(__name__)
+        try:
+            self.conf_threshold = float(os.environ.get('DETECTION_CONF', '0.35'))
+        except Exception:
+            self.conf_threshold = 0.35
         self.classNames = [
             "person", "bicycle", "car", "motorbike", "aeroplane", "bus", "train",
             "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter",
@@ -62,8 +67,12 @@ class CameraService:
                         (0, 0, 255), 2, cv2.LINE_AA)
             _, buf = cv2.imencode('.jpg', frame)
             return buf.tobytes(), False
+        # Downscale to speed up inference on small instances
+        h, w = frame.shape[:2]
+        scale = 640.0 / max(w, h) if max(w, h) > 640 else 1.0
+        small = cv2.resize(frame, (int(w * scale), int(h * scale))) if scale != 1.0 else frame
         try:
-            results = self.model(frame, stream=True)
+            results = self.model(small, stream=True)
         except Exception:
             cv2.putText(frame, 'Detection unavailable', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1,
                         (0, 0, 255), 2, cv2.LINE_AA)
@@ -71,23 +80,28 @@ class CameraService:
             return buf.tobytes(), False
 
         for r in results:
-            if hasattr(r, 'boxes') and r.boxes is not None and len(r.boxes) > 0:
-                detected_any = True
-            for box in r.boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                w, h = x2 - x1, y2 - y1
-                conf = float(box.conf[0]) if box.conf is not None else 0.0
-                cls = int(box.cls[0]) if box.cls is not None else -1
-                detected_class = self.classNames[cls] if 0 <= cls < len(self.classNames) else 'object'
-
-                cvzone.cornerRect(frame, (x1, y1, w, h))
-                cvzone.putTextRect(
-                    frame,
-                    f"{detected_class} {conf:.2f}",
-                    (max(0, x1), max(35, y1)),
-                    scale=1,
-                    thickness=1
-                )
+            if hasattr(r, 'boxes') and r.boxes is not None:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    bw, bh = x2 - x1, y2 - y1
+                    conf = float(box.conf[0]) if box.conf is not None else 0.0
+                    cls = int(box.cls[0]) if box.cls is not None else -1
+                    detected_class = self.classNames[cls] if 0 <= cls < len(self.classNames) else 'object'
+                    if conf < self.conf_threshold:
+                        continue
+                    detected_any = True
+                    # Map boxes back to original frame size
+                    inv = 1.0 / scale
+                    X1, Y1 = int(x1 * inv), int(y1 * inv)
+                    BW, BH = int(bw * inv), int(bh * inv)
+                    cvzone.cornerRect(frame, (X1, Y1, BW, BH))
+                    cvzone.putTextRect(
+                        frame,
+                        f"{detected_class} {conf:.2f}",
+                        (max(0, X1), max(35, Y1)),
+                        scale=1,
+                        thickness=1
+                    )
 
         _, buf = cv2.imencode('.jpg', frame)
         return buf.tobytes(), detected_any
@@ -101,7 +115,7 @@ class CameraService:
         if self.model is not None:
             return
         # Allow disabling detection via env var to reduce memory usage
-        enable_detection = os.environ.get('ENABLE_DETECTION', '0').lower() in ('1', 'true', 'yes')
+        enable_detection = os.environ.get('ENABLE_DETECTION', '1').lower() in ('1', 'true', 'yes')
         if not enable_detection:
             self.model = None
             return
@@ -109,7 +123,9 @@ class CameraService:
             # Import here so torch is only loaded if enabled
             from ultralytics import YOLO as _YOLO  # type: ignore
             self.model = _YOLO("yolov8n.pt")
-        except Exception:
+            self.logger.info("YOLO model loaded for detection")
+        except Exception as e:
+            self.logger.error("Failed to load YOLO model: %s", e)
             self.model = None
 
     def process_frame(self, frame):
